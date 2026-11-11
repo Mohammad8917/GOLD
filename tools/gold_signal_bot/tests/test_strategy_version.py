@@ -6,6 +6,7 @@ import unittest
 from gold_signal.strategy_version import (
     STRATEGY_AST_HASH,
     STRATEGY_VERSION,
+    STRATEGY_VERSION_HISTORY,
     current_strategy_ast_hash,
     strategy_ast_hash,
 )
@@ -15,6 +16,9 @@ class StrategyVersionTests(unittest.TestCase):
     def test_committed_strategy_and_indicator_ast_matches_fingerprint(self):
         self.assertTrue(STRATEGY_VERSION.strip())
         self.assertRegex(STRATEGY_VERSION, r"-v[1-9][0-9]*$")
+        self.assertEqual(STRATEGY_VERSION, STRATEGY_VERSION_HISTORY[-1][0])
+        self.assertEqual(STRATEGY_AST_HASH, STRATEGY_VERSION_HISTORY[-1][1])
+        self.assertEqual(len({version for version, _ in STRATEGY_VERSION_HISTORY}), len(STRATEGY_VERSION_HISTORY))
         self.assertEqual(
             current_strategy_ast_hash(),
             STRATEGY_AST_HASH,
