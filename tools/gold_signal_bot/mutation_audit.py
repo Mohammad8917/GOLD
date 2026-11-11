@@ -41,8 +41,8 @@ MUTATIONS = [
     {
         "label": "BUY cross direction inverted",
         "path": "gold_signal/strategy.py",
-        "old": "close > fast[i] and fast[i] > slow[i]",
-        "new": "close < fast[i] and fast[i] > slow[i]",
+        "old": "close > fast[i]",
+        "new": "close < fast[i]",
         "test": "test_gold_signal_bot.SignalGenerationTests.test_detects_buy_setup",
     },
     {
@@ -62,8 +62,8 @@ MUTATIONS = [
     {
         "label": "SELL cross direction inverted",
         "path": "gold_signal/strategy.py",
-        "old": "close < fast[i] and fast[i] < slow[i]",
-        "new": "close > fast[i] and fast[i] < slow[i]",
+        "old": "close < fast[i]",
+        "new": "close > fast[i]",
         "test": "test_gold_signal_bot.SignalGenerationTests.test_detects_sell_setup",
     },
     {
