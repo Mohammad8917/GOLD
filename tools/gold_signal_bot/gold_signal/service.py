@@ -10,11 +10,17 @@ from .telegram import format_signal, send_telegram
 
 LOG = logging.getLogger("gold_signal_bot")
 
+# Keep indicator initialization consistent with the historical backtest. The
+# EMA50/RSI14/ATR14 values need a substantial past-only warm-up before a bar
+# may be evaluated; otherwise a short provider response changes the signal.
+INDICATOR_WARMUP_BARS = 200
+
 def run_once(config: Config, session: requests.Session | None = None) -> str:
-    """Process all newly closed candles in order, with O(n) signal evaluation.
+    """Process every new closed candle, but only with sufficient prior history.
 
     First boot evaluates only the newest closed bar. Later cycles recover all
-    newly closed bars retained by the provider, or fail closed if history is short.
+    newly closed bars retained by the provider, or fail closed if either the
+    cursor or the indicator warm-up lies outside the returned history.
     """
     with process_lock(config.state_file):
         candles = fetch_closed_candles(config, session=session)
@@ -40,6 +46,12 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
         if start_index >= len(candles):
             LOG.info("No new confirmed GOLD signal on %s", config.timeframe)
             return "no_signal"
+        if start_index < INDICATOR_WARMUP_BARS:
+            raise RuntimeError(
+                "Insufficient indicator warm-up history before the next candle: "
+                f"need {INDICATOR_WARMUP_BARS} prior candles, have {start_index}; "
+                "refusing to calculate signals from an unstable indicator seed"
+            )
         signals = {
             signal["candle_time"]: signal
             for signal in detect_signals(
