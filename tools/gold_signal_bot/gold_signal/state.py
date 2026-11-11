@@ -1,12 +1,33 @@
-"""Durable signal-processing cursor and cross-process locking."""
+"""Durable signal-processing cursor, delivery WAL, and cross-process locking."""
 from __future__ import annotations
-import json, logging, os, threading
+
+import json
+import logging
+import os
+import threading
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
 LOG = logging.getLogger("gold_signal_bot")
+
+
+def _atomic_json_write(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(path.name + f".{os.getpid()}.tmp")
+    try:
+        with temp.open("w", encoding="utf-8") as stream:
+            json.dump(value, stream, ensure_ascii=False, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp, path)
+    finally:
+        try:
+            temp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
 
 def read_state(path: Path) -> str:
     """Return the last fully processed candle timestamp.
@@ -24,23 +45,38 @@ def read_state(path: Path) -> str:
     except (OSError, ValueError, AttributeError) as exc:
         raise RuntimeError("State file is unreadable; refusing to reset the processing cursor") from exc
 
+
 def write_state(path: Path, candle_time: datetime) -> None:
     """Atomically persist the processed-through watermark."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(path.name + f".{os.getpid()}.tmp")
+    _atomic_json_write(path, {"last_processed_candle": candle_time.isoformat()})
+
+
+def outbox_path(state_path: Path) -> Path:
+    """Return the sidecar path used for the write-ahead delivery log."""
+    return state_path.with_name(state_path.name + ".outbox.json")
+
+
+def read_outbox(state_path: Path) -> dict[str, dict]:
+    """Read the delivery WAL; corruption must never be interpreted as empty."""
+    path = outbox_path(state_path)
     try:
-        with temp.open("w", encoding="utf-8") as stream:
-            json.dump({"last_processed_candle": candle_time.isoformat()}, stream)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temp, path)
-    finally:
-        try:
-            temp.unlink(missing_ok=True)
-        except OSError:
-            pass
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict) or any(not isinstance(v, dict) for v in value.values()):
+            raise ValueError("outbox must be a JSON object of records")
+        return value
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, AttributeError) as exc:
+        raise RuntimeError("Delivery WAL is unreadable; refusing to risk duplicate or lost signals") from exc
+
+
+def write_outbox(state_path: Path, records: dict[str, dict]) -> None:
+    """Atomically persist all WAL records before/after Telegram operations."""
+    _atomic_json_write(outbox_path(state_path), records)
+
 
 _LOCAL_PROCESS_GUARD = threading.Lock()
+
 
 @contextmanager
 def process_lock(state_path: Path) -> Iterator[None]:
