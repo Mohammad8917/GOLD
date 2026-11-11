@@ -104,9 +104,11 @@ def _trim_sent_history(outbox: dict[str, dict], limit: int = 1000) -> None:
 def _process_due_expirations(
     config: Config, candles: list[dict], outbox: dict[str, dict],
     current_index: int, session: requests.Session | None,
+    *, index_by_time: dict | None = None,
 ) -> int:
     """Send durable expiry notices when a signal reaches its TTL candle."""
-    index_by_time = {bar["time"]: index for index, bar in enumerate(candles)}
+    if index_by_time is None:
+        index_by_time = {bar["time"]: index for index, bar in enumerate(candles)}
     sent_count = 0
     interval = TIMEFRAMES[config.timeframe][1]
     ttl_candles = getattr(config, "signal_ttl_candles", None)
@@ -245,6 +247,7 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
         if len(candles) < 60:
             raise RuntimeError("Insufficient candle history for signal evaluation")
 
+        candle_index_by_time = {bar["time"]: index for index, bar in enumerate(candles)}
         cursor_raw = read_state(config.state_file)
         outbox = read_outbox(config.state_file)
         # This is the only permitted SENDING -> UNKNOWN transition point.
@@ -274,6 +277,7 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
         if start_index >= len(candles):
             expiry_delivered = _process_due_expirations(
                 config, candles, outbox, len(candles) - 1, session,
+                index_by_time=candle_index_by_time,
             )
             if expiry_delivered:
                 return "expired"
@@ -302,6 +306,7 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
             stamp = candles[index]["time"]
             delivered += _process_due_expirations(
                 config, candles, outbox, index, session,
+                index_by_time=candle_index_by_time,
             )
             data = signals.get(stamp)
             if data:
