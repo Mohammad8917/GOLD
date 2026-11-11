@@ -34,6 +34,34 @@ def _redact_error(error: Exception, config: Config) -> str:
             value = value.replace(secret, "[REDACTED]")
     return value[:500]
 
+def _recover_startup_sending(outbox: dict[str, dict], state_path) -> None:
+    """Convert records left SENDING by a previous process into retryable UNKNOWN."""
+    changed = False
+    now = datetime.now(timezone.utc).isoformat()
+    for key, record in outbox.items():
+        if record.get("status") != "SENDING":
+            continue
+        record["status"] = "UNKNOWN"
+        record["updated_at"] = now
+        record["last_error"] = record.get("last_error") or (
+            "Process stopped while delivery was marked SENDING; Telegram outcome is unknown"
+        )
+        record.setdefault("recovery_history", []).append({
+            "at": now,
+            "from": "SENDING",
+            "to": "UNKNOWN",
+            "decision": "startup recovery; retry with [RECOVERY RETRY]",
+        })
+        outbox[key] = record
+        changed = True
+        LOG.error(
+            "Startup recovery: signal %s was left SENDING; status is UNKNOWN; "
+            "decision: retry with [RECOVERY RETRY]",
+            key,
+        )
+    if changed:
+        write_outbox(state_path, outbox)
+
 
 def _trim_sent_history(outbox: dict[str, dict], limit: int = 1000) -> None:
     """Bound the audit journal while never deleting an unfinished delivery."""
@@ -62,6 +90,8 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
 
         cursor_raw = read_state(config.state_file)
         outbox = read_outbox(config.state_file)
+        # This is the only permitted SENDING -> UNKNOWN transition point.
+        _recover_startup_sending(outbox, config.state_file)
 
         if not cursor_raw:
             start_index = len(candles) - 1
@@ -120,25 +150,11 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
                     processed += 1
                     continue
 
-                recovery = bool(record and record.get("status") in {"SENDING", "UNKNOWN"})
                 if record and record.get("status") == "SENDING":
-                    record["status"] = "UNKNOWN"
-                    record["updated_at"] = datetime.now(timezone.utc).isoformat()
-                    outbox[key] = record
-                    write_outbox(config.state_file, outbox)
-                    record.setdefault("recovery_history", []).append({
-                        "at": record["updated_at"],
-                        "from": "SENDING",
-                        "to": "UNKNOWN",
-                        "decision": "retry with [RECOVERY RETRY]",
-                    })
-                    outbox[key] = record
-                    write_outbox(config.state_file, outbox)
-                    LOG.error(
-                        "Signal %s was left SENDING after restart; status is UNKNOWN; "
-                        "decision: retry with [RECOVERY RETRY]",
-                        key,
+                    raise RuntimeError(
+                        f"WAL invariant violation: signal {key} is SENDING outside startup recovery"
                     )
+                recovery = bool(record and record.get("status") == "UNKNOWN")
 
                 if not record:
                     message = format_signal(data, config.timeframe)
@@ -212,10 +228,32 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
                         )
                     raise
 
+                if type(message_id) is not int or message_id <= 0:
+                    record["status"] = "UNKNOWN"
+                    record["last_error"] = (
+                        "sendMessage returned success without a valid message_id"
+                    )
+                    record["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    record.setdefault("recovery_history", []).append({
+                        "at": record["updated_at"],
+                        "from": "SENDING",
+                        "to": "UNKNOWN",
+                        "decision": "retry with [RECOVERY RETRY]; success response was not auditable",
+                    })
+                    outbox[key] = record
+                    write_outbox(config.state_file, outbox)
+                    LOG.error(
+                        "Telegram response for signal %s lacked a valid message_id; "
+                        "status is UNKNOWN and cursor remains unchanged",
+                        key,
+                    )
+                    raise RuntimeError(
+                        "Telegram sendMessage returned success without a valid message_id; "
+                        "delivery is UNKNOWN and will be retried with [RECOVERY RETRY]"
+                    )
+
                 record["status"] = "SENT"
-                record["telegram_message_id"] = (
-                    message_id if isinstance(message_id, int) else None
-                )
+                record["telegram_message_id"] = message_id
                 record["updated_at"] = datetime.now(timezone.utc).isoformat()
                 outbox[key] = record
                 _trim_sent_history(outbox)
