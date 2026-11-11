@@ -45,8 +45,9 @@ class HistoricalBacktestExecutionTests(unittest.TestCase):
         bars = [candle(0), candle(1, open_=112.0, high=122.0, low=111.0)]
         trades, _ = simulate(bars, [signal()], cost_per_side=0.0)
         self.assertEqual(len(trades), 1)
-        # Half exits at 112 (+1.2R), half at 122 (+2.2R).
-        self.assertAlmostEqual(trades[0]["net_r"], 1.7, places=6)
+        # TP1 receives the favorable open at 112 (+1.2R); TP2 fills at
+        # its 120 level (+2.0R), because the bar opened below TP2.
+        self.assertAlmostEqual(trades[0]["net_r"], 1.6, places=6)
 
     def test_gap_through_stop_uses_worse_open_price(self) -> None:
         bars = [candle(0), candle(1, open_=88.0, high=95.0, low=87.0)]
