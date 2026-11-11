@@ -8,6 +8,8 @@ from unittest.mock import Mock, patch
 
 import requests
 
+from tests.helpers.telegram_mock import mock_send_success, mock_send_timeout
+
 from gold_signal_bot import (
     Config, _get_with_retry, _is_expected_gold_pause, atr, detect_signal, ema,
     fetch_closed_candles, format_signal, parse_bar_time, process_lock, read_state,
@@ -659,7 +661,7 @@ class RunOnceTests(unittest.TestCase):
             candles = self.make_candles()
             with patch("gold_signal.service.fetch_closed_candles", return_value=candles), \
                  patch("gold_signal.service.detect_signals", return_value=[]), \
-                 patch("gold_signal.service.send_telegram") as sender:
+                 patch("gold_signal.service.send_telegram", new=mock_send_success()) as sender:
                 result = run_once(config)
             self.assertEqual(result, "processed_no_signal")
             sender.assert_not_called()
@@ -686,7 +688,7 @@ class RunOnceTests(unittest.TestCase):
             with patch("gold_signal.service.fetch_closed_candles", return_value=candles), \
                  patch("gold_signal.service.detect_signals", return_value=[data]), \
                  patch("gold_signal.service.format_signal", return_value="test message"), \
-                 patch("gold_signal.service.send_telegram", return_value=123) as sender:
+                 patch("gold_signal.service.send_telegram", new=mock_send_success(123)) as sender:
                 result = run_once(config)
             self.assertEqual(result, "sent")
             sender.assert_called_once()
@@ -711,7 +713,7 @@ class RunOnceTests(unittest.TestCase):
             with patch("gold_signal.service.fetch_closed_candles", return_value=candles), \
                  patch("gold_signal.service.detect_signals", return_value=[data]), \
                  patch("gold_signal.service.format_signal", return_value="test message"), \
-                 patch("gold_signal.service.send_telegram", side_effect=requests.Timeout("offline")):
+                 patch("gold_signal.service.send_telegram", new=mock_send_timeout()):
                 with self.assertRaises(requests.Timeout):
                     run_once(config)
             self.assertEqual(read_state(config.state_file), "")
