@@ -11,6 +11,7 @@ TIMEFRAMES = {
     "30min": ("30min", 1800), "1h": ("1h", 3600), "4h": ("4h", 14400),
     "1day": ("1day", 86400),
 }
+DEFAULT_SIGNAL_TTL_CANDLES = 24
 
 @dataclass(frozen=True)
 class Config:
@@ -28,6 +29,7 @@ class Config:
     retry_base_seconds: float
     stale_multiplier: float
     gap_multiplier: float
+    signal_ttl_candles: int = DEFAULT_SIGNAL_TTL_CANDLES
 
     @classmethod
     def from_env(cls, *, require_market_data: bool = True) -> "Config":
@@ -58,6 +60,9 @@ class Config:
         retry_base = float(os.getenv("GOLD_RETRY_BASE_SECONDS", "1"))
         stale_multiplier = float(os.getenv("GOLD_STALE_CANDLE_MULTIPLIER", "3"))
         gap_multiplier = float(os.getenv("GOLD_MAX_GAP_MULTIPLIER", "1.5"))
+        signal_ttl_candles = int(os.getenv("SIGNAL_TTL_CANDLES", str(DEFAULT_SIGNAL_TTL_CANDLES)))
+        if signal_ttl_candles < 1:
+            raise ValueError("SIGNAL_TTL_CANDLES must be at least 1")
         if not 1 <= retry_attempts <= 8:
             raise ValueError("GOLD_RETRY_ATTEMPTS must be between 1 and 8")
         if not all(math.isfinite(v) and v > 0 for v in (retry_base, stale_multiplier, gap_multiplier)):
@@ -71,4 +76,5 @@ class Config:
         return cls(api_key, bot_token, chat_id, timeframe, poll_seconds,
                    atr_multiplier, tp1_r, tp2_r, state_file,
                    max(5, int(os.getenv("GOLD_HTTP_TIMEOUT", "20"))),
-                   retry_attempts, retry_base, stale_multiplier, gap_multiplier)
+                   retry_attempts, retry_base, stale_multiplier, gap_multiplier,
+                   signal_ttl_candles)
