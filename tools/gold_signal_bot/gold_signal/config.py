@@ -11,7 +11,15 @@ TIMEFRAMES = {
     "30min": ("30min", 1800), "1h": ("1h", 3600), "4h": ("4h", 14400),
     "1day": ("1day", 86400),
 }
-DEFAULT_SIGNAL_TTL_CANDLES = 24
+DEFAULT_SIGNAL_TTL_CANDLES = 24  # 24 one-hour candles = one trading day
+
+
+def default_signal_ttl_candles(timeframe: str) -> int:
+    """Scale the one-day default to the selected candle interval."""
+    if timeframe not in TIMEFRAMES:
+        raise ValueError(f"Unsupported timeframe for signal TTL: {timeframe!r}")
+    seconds = TIMEFRAMES[timeframe][1]
+    return max(1, (24 * 60 * 60 + seconds - 1) // seconds)
 
 @dataclass(frozen=True)
 class Config:
@@ -60,7 +68,11 @@ class Config:
         retry_base = float(os.getenv("GOLD_RETRY_BASE_SECONDS", "1"))
         stale_multiplier = float(os.getenv("GOLD_STALE_CANDLE_MULTIPLIER", "3"))
         gap_multiplier = float(os.getenv("GOLD_MAX_GAP_MULTIPLIER", "1.5"))
-        signal_ttl_candles = int(os.getenv("SIGNAL_TTL_CANDLES", str(DEFAULT_SIGNAL_TTL_CANDLES)))
+        ttl_override = os.getenv("SIGNAL_TTL_CANDLES", "").strip()
+        signal_ttl_candles = (
+            int(ttl_override) if ttl_override
+            else default_signal_ttl_candles(timeframe)
+        )
         if signal_ttl_candles < 1:
             raise ValueError("SIGNAL_TTL_CANDLES must be at least 1")
         if not 1 <= retry_attempts <= 8:
