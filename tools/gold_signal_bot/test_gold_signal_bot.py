@@ -11,7 +11,7 @@ import requests
 from gold_signal_bot import (
     Config, _get_with_retry, _is_expected_gold_pause, atr, detect_signal, ema,
     fetch_closed_candles, format_signal, parse_bar_time, process_lock, read_state,
-    rsi, run_once, send_telegram, validate_candles, write_state,
+    rsi, run_once, send_telegram, validate_candles, write_state, detect_signals,
 )
 
 
@@ -641,7 +641,7 @@ class RunOnceTests(unittest.TestCase):
             config = self.make_config(folder)
             candles = self.make_candles()
             with patch("gold_signal.service.fetch_closed_candles", return_value=candles), \
-                 patch("gold_signal.service.detect_signal", return_value=None), \
+                 patch("gold_signal.service.detect_signals", return_value=[]), \
                  patch("gold_signal.service.send_telegram") as sender:
                 result = run_once(config)
             self.assertEqual(result, "processed_no_signal")
@@ -654,7 +654,7 @@ class RunOnceTests(unittest.TestCase):
             candles = self.make_candles()
             write_state(config.state_file, candles[-1]["time"])
             with patch("gold_signal.service.fetch_closed_candles", return_value=candles), \
-                 patch("gold_signal.service.detect_signal") as detect, \
+                 patch("gold_signal.service.detect_signals") as detect, \
                  patch("gold_signal.service.send_telegram") as sender:
                 result = run_once(config)
             self.assertEqual(result, "no_signal")
@@ -667,7 +667,7 @@ class RunOnceTests(unittest.TestCase):
             candles = self.make_candles()
             data = self.make_signal(candles[-1]["time"])
             with patch("gold_signal.service.fetch_closed_candles", return_value=candles), \
-                 patch("gold_signal.service.detect_signal", return_value=data), \
+                 patch("gold_signal.service.detect_signals", return_value=[data]), \
                  patch("gold_signal.service.format_signal", return_value="test message"), \
                  patch("gold_signal.service.send_telegram") as sender:
                 result = run_once(config)
