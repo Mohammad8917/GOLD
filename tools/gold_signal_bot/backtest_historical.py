@@ -10,6 +10,7 @@ import csv
 import json
 import math
 import os
+import random
 import sys
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -222,6 +223,75 @@ def simulate(bars: list[dict[str, Any]], signals: list[dict[str, Any]],
     return trades, skipped_overlap
 
 
+
+def _percentile(values: list[float], probability: float) -> float:
+    ordered = sorted(values)
+    if not ordered:
+        raise ValueError("percentile requires at least one value")
+    position = (len(ordered) - 1) * probability
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = position - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
+
+def monte_carlo_risk_metrics(
+    trade_returns: list[float], *, simulations: int = 1000,
+    block_size: int = 5, seed: int = 42, minimum_trades: int = 30,
+) -> dict[str, Any]:
+    """Circularity-free moving-block bootstrap of chronological trade R returns.
+
+    Blocks preserve short runs of adjacent outcomes. Results are a sensitivity
+    analysis, not a forecast or evidence of profitability.
+    """
+    if simulations < 100 or block_size < 1 or minimum_trades < 1:
+        raise ValueError("Require at least 100 simulations and positive block/minimum sizes")
+    if not all(math.isfinite(value) for value in trade_returns):
+        raise ValueError("Trade returns must all be finite")
+    count = len(trade_returns)
+    if count < minimum_trades:
+        return {
+            "status": "insufficient_sample", "trade_count": count,
+            "minimum_trades": minimum_trades,
+            "note": "Monte Carlo results withheld because the completed-trade sample is too small.",
+        }
+    rng = random.Random(seed)
+    net_results: list[float] = []
+    drawdowns: list[float] = []
+    block = min(block_size, count)
+    for _ in range(simulations):
+        sampled: list[float] = []
+        while len(sampled) < count:
+            take = min(block, count - len(sampled))
+            start_index = rng.randrange(0, count - take + 1)
+            sampled.extend(trade_returns[start_index:start_index + take])
+        equity = peak = max_drawdown = 0.0
+        for value in sampled:
+            equity += value
+            peak = max(peak, equity)
+            max_drawdown = max(max_drawdown, peak - equity)
+        net_results.append(equity)
+        drawdowns.append(max_drawdown)
+    return {
+        "status": "computed", "method": "moving_block_bootstrap",
+        "trade_count": count, "simulations": simulations,
+        "block_size_trades": block, "seed": seed,
+        "probability_of_net_loss_percent": round(
+            100.0 * sum(value < 0 for value in net_results) / simulations, 2
+        ),
+        "net_r_percentiles": {
+            "p05": round(_percentile(net_results, 0.05), 4),
+            "p50": round(_percentile(net_results, 0.50), 4),
+            "p95": round(_percentile(net_results, 0.95), 4),
+        },
+        "max_drawdown_r_percentiles": {
+            "p50": round(_percentile(drawdowns, 0.50), 4),
+            "p95": round(_percentile(drawdowns, 0.95), 4),
+        },
+        "note": "Resampling sensitivity only; not a forecast, not out-of-sample validation, and not proof of a trading edge.",
+    }
+
+
 def summarize(trades: list[dict[str, Any]], signals: list[dict[str, Any]],
               skipped: int, bars: list[dict[str, Any]], start: date, end: date) -> dict[str, Any]:
     returns = [float(t["net_r"]) for t in trades]
@@ -253,6 +323,7 @@ def summarize(trades: list[dict[str, Any]], signals: list[dict[str, Any]],
         "profit_factor": round(gross_win / gross_loss, 4) if gross_loss else (None if not gross_win else "infinite"),
         "average_trade_r": round(sum(returns) / len(returns), 4) if returns else 0.0,
         "max_drawdown_r": round(max_dd, 4),
+        "monte_carlo_block_bootstrap": monte_carlo_risk_metrics(returns),
         "exit_sl": sum(t["exit_reason"] == "SL" for t in trades),
         "exit_tp2": sum(t["exit_reason"] == "TP2" for t in trades),
         "methodology": "Entry at signal candle close; 50% exits at TP1 and 50% at TP2; conservative stop-first if SL and target touch in same OHLC bar; one open position; unfinished trades excluded.",
