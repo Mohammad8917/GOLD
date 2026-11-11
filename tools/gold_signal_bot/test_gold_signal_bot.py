@@ -501,6 +501,22 @@ class SignalGenerationTests(unittest.TestCase):
         self.assertAlmostEqual(result["take_profit_1"] - result["entry"], risk, places=9)
         self.assertAlmostEqual(result["take_profit_2"] - result["entry"], risk * 2.0, places=9)
 
+    def test_batch_evaluator_matches_latest_and_is_causal(self):
+        bars = self.make_bars("BUY")
+        batch = detect_signals(bars)
+        latest = detect_signal(bars)
+        self.assertIsNotNone(latest)
+        self.assertIn(latest, batch)
+        # Appending future candles must not rewrite an already-confirmed signal.
+        future = dict(bars[-1])
+        future["time"] = bars[-1]["time"] + timedelta(minutes=15)
+        future["open"] = future["close"] = bars[-1]["close"] + 0.1
+        future["high"] = future["close"] + 1.0
+        future["low"] = future["close"] - 1.0
+        extended = detect_signals(bars + [future])
+        preserved = next(item for item in extended if item["candle_time"] == latest["candle_time"])
+        self.assertEqual(preserved, latest)
+
     def test_detects_sell_setup(self):
         bars = self.make_bars("SELL")
         result = detect_signal(bars)
