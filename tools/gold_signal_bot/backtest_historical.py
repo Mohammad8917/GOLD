@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 
 from gold_signal.config import TIMEFRAMES
 from gold_signal.indicators import atr, ema, rsi
+from gold_signal.market_data import _is_expected_gold_pause
 
 API_URL = "https://api.twelvedata.com/time_series"
 
@@ -30,6 +31,24 @@ def parse_time(value: str) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def validate_history_continuity(bars: list[dict[str, Any]], timeframe: str) -> None:
+    """Fail closed on unexplained intraday data gaps before simulating trades."""
+    if timeframe == "1day":
+        # Calendar-day bars naturally skip weekends; do not classify those as missing.
+        return
+    seconds = TIMEFRAMES[timeframe][1]
+    for left, right in zip(bars, bars[1:]):
+        gap_seconds = (right["time"] - left["time"]).total_seconds()
+        if gap_seconds <= seconds * 1.5:
+            continue
+        left_end = left["time"] + timedelta(seconds=seconds)
+        if not _is_expected_gold_pause(left_end, right["time"]):
+            raise RuntimeError(
+                f"Unexpected historical data gap of {int(gap_seconds)} seconds "
+                f"after {left['time'].isoformat()}; refusing to backtest across missing candles."
+            )
 
 
 def fetch_history(api_key: str, timeframe: str, start: date, end: date,
@@ -79,6 +98,7 @@ def fetch_history(api_key: str, timeframe: str, start: date, end: date,
     result = [candles[k] for k in sorted(candles)]
     if len(result) < 100:
         raise RuntimeError(f"Only {len(result)} closed candles downloaded; at least 100 are required.")
+    validate_history_continuity(result, timeframe)
     return result
 
 
