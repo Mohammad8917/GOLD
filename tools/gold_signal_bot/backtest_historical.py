@@ -358,6 +358,7 @@ def evaluate_chronological_holdout(
         "split_time": test_bars[split_index]["time"].isoformat(),
         "warning": (
             "The holdout is only independent if it is not used to tune rules or parameters. "
+            "Each segment is simulated independently; positions still open at a segment boundary are excluded. "
             "This is a fixed-rule chronological holdout, not walk-forward optimization."
         ),
     }
