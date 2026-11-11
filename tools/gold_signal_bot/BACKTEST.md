@@ -29,7 +29,7 @@ python tools\gold_signal_bot\backtest_historical.py --start 2025-11-11 --end 202
 
 Optional cost model: pass `--cost-per-side 0.20` to deduct an estimated 0.20 XAU/USD price units per side (entry and exit). This is only an example; use a realistic spread/slippage estimate for the actual broker/price feed you intend to compare against. Default zero costs are optimistic and must not be presented as live performance.
 
-The script downloads date-bounded chunks, sorts/deduplicates candles, discards still-open candles, and saves:
+The script downloads date-bounded chunks, sorts/deduplicates candles, discards still-open candles, and refuses to simulate across unexplained intraday data gaps. Expected weekend/maintenance closures are treated separately; daily bars may naturally skip weekends. It saves:
 - `reports\xauusd_1y.json`: aggregate metrics and methodology.
 - `reports\xauusd_1y.csv`: completed trade-by-trade results.
 
@@ -45,4 +45,4 @@ The script downloads date-bounded chunks, sorts/deduplicates candles, discards s
 - The feed is Twelve Data's XAU/USD spot series. Results can differ from a broker's CFD/spot quote. Data coverage, account entitlement, and historical depth depend on the provider plan.
 - This is an in-sample historical simulation, not proof of future profitability. A robust evaluation should reserve a later out-of-sample period and run a live paper forward-test.
 
-The report includes raw candle count, data gaps, signal count, completed trades, overlap-skipped signals, win rate, net R, profit factor, average R, drawdown in R, and exit counts. Review data gaps and compare the CSV against the chart before trusting the metrics.
+The report includes raw candle count, data gaps, signal count, completed trades, overlap-skipped signals, win rate, net R, profit factor, average R, drawdown in R, and exit counts. An unexplained intraday gap stops the run rather than silently allowing a position to cross missing price action. Review expected session gaps and compare the CSV against the chart before trusting the metrics.
