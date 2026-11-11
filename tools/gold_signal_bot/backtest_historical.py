@@ -134,6 +134,46 @@ def fetch_history(api_key: str, timeframe: str, start: date, end: date,
     return result
 
 
+def fetch_history_with_warmup(
+    api_key: str, timeframe: str, start: date, end: date,
+    session: requests.Session, *, required_bars: int = WARMUP_BARS,
+    max_attempts: int = 3, initial_margin_multiplier: float = 2.0,
+) -> tuple[list[dict[str, Any]], int]:
+    """Fetch enough actual pre-window candles, expanding the request at most 3 times."""
+    if timeframe not in TIMEFRAMES:
+        raise ValueError(f"Unsupported timeframe: {timeframe}")
+    if required_bars < 1 or not 1 <= max_attempts <= 3:
+        raise ValueError("required_bars must be positive and max_attempts must be between 1 and 3")
+    if not math.isfinite(initial_margin_multiplier) or initial_margin_multiplier < 1.0:
+        raise ValueError("initial_margin_multiplier must be finite and at least 1")
+
+    interval_seconds = TIMEFRAMES[timeframe][1]
+    margin_days = max(
+        1,
+        math.ceil(required_bars * interval_seconds * initial_margin_multiplier / 86400),
+    )
+    start_utc = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
+    last_count = 0
+
+    for attempt in range(1, max_attempts + 1):
+        request_start = start - timedelta(days=margin_days)
+        bars = fetch_history(api_key, timeframe, request_start, end, session)
+        # Coverage of the measured test window is checked separately from warm-up.
+        validate_test_window_coverage(bars, start, end, timeframe)
+        last_count = sum(bar["time"] < start_utc for bar in bars)
+        if last_count >= required_bars:
+            return bars, last_count
+        if attempt < max_attempts:
+            margin_days *= 2
+
+    raise RuntimeError(
+        f"Historical warm-up unavailable after {max_attempts} attempts: "
+        f"only {last_count} of {required_bars} required completed candles "
+        f"were found before {start.isoformat()}. Choose a later start date "
+        "or a Twelve Data plan with deeper history."
+    )
+
+
 def select_test_window_signals(signals: list[dict[str, Any]], start: date) -> list[dict[str, Any]]:
     """Exclude warm-up-period entries while retaining their bars for indicator seeding."""
     start_utc = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
@@ -170,7 +210,8 @@ def generate_signals(bars: list[dict[str, Any]], atr_mult: float,
 
 def simulate(bars: list[dict[str, Any]], signals: list[dict[str, Any]],
              cost_per_side: float, *,
-             signal_ttl_candles: int | None = None
+             signal_ttl_candles: int | None = None,
+             open_positions: list[dict[str, Any]] | None = None
              ) -> tuple[list[dict[str, Any]], int]:
     """One position at a time; TP/SL first, then close remaining size at TTL close."""
     timeframe = os.getenv("GOLD_TIMEFRAME", "15min")
@@ -230,7 +271,31 @@ def simulate(bars: list[dict[str, Any]], signals: list[dict[str, Any]],
                 exit_reason, exit_time, exit_index = "EXPIRED", close_time.isoformat(), j
                 break
         if exit_reason == "OPEN_AT_END":
-            # Keep the position open through the end; later signals cannot overlap it.
+            # Keep unfinished positions separate from completed-trade statistics.
+            mark_bar = bars[-1]
+            bars_held = len(bars) - 1 - idx
+            unrealized_r = remaining * (
+                sign * (mark_bar["close"] - sig["entry"]) - cost_per_side
+            ) / risk
+            if open_positions is not None:
+                open_positions.append({
+                    "signal_time": sig["signal_time"].isoformat(),
+                    "side": sig["side"],
+                    "entry": sig["entry"],
+                    "stop": sig["stop"],
+                    "tp1": sig["tp1"],
+                    "tp2": sig["tp2"],
+                    "mark_time": mark_bar["time"].isoformat(),
+                    "mark_price": float(mark_bar["close"]),
+                    "bars_held": bars_held,
+                    "ttl_candles": signal_ttl_candles,
+                    "bars_until_expiry": max(0, signal_ttl_candles - bars_held),
+                    "remaining_fraction": remaining,
+                    "tp1_hit": tp1_done,
+                    "realized_r": round(realized_r, 6),
+                    "unrealized_r": round(unrealized_r, 6),
+                    "total_marked_r": round(realized_r + unrealized_r, 6),
+                })
             busy_until = len(bars) - 1
             continue
         trades.append({
@@ -314,7 +379,9 @@ def monte_carlo_risk_metrics(
 
 
 def summarize(trades: list[dict[str, Any]], signals: list[dict[str, Any]],
-              skipped: int, bars: list[dict[str, Any]], start: date, end: date) -> dict[str, Any]:
+              skipped: int, bars: list[dict[str, Any]], start: date, end: date,
+              open_positions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    open_positions = open_positions or []
     returns = [float(t["net_r"]) for t in trades]
     wins = [x for x in returns if x > 0]
     losses = [x for x in returns if x < 0]
@@ -337,7 +404,13 @@ def summarize(trades: list[dict[str, Any]], signals: list[dict[str, Any]],
         "candles": len(bars), "data_time_gaps_over_1_5_intervals": gaps,
         "signals_generated": len(signals), "completed_trades": len(trades),
         "signals_skipped_while_position_open": skipped,
-        "unfinished_positions_excluded": len(signals) - len(trades) - skipped,
+        "unfinished_positions_excluded": len(open_positions),
+        "open_positions_count": len(open_positions),
+        "open_positions": open_positions,
+        "open_position_warning": (
+            "Open positions exceed 5% of generated signals; completed-trade metrics may be materially incomplete."
+            if signals and len(open_positions) / len(signals) > 0.05 else None
+        ),
         "wins": len(wins), "losses": len(losses),
         "win_rate_percent": round(100 * len(wins) / len(trades), 2) if trades else 0.0,
         "net_profit_r": round(sum(returns), 4),
@@ -392,13 +465,15 @@ def evaluate_chronological_holdout(
             signal_time = signal["signal_time"]
             if signal_time in index_by_time:
                 window_signals.append({**signal, "signal_index": index_by_time[signal_time]})
+        window_open_positions: list[dict[str, Any]] = []
         trades, skipped = simulate(
             window_bars, window_signals, cost_per_side,
             signal_ttl_candles=signal_ttl_candles,
+            open_positions=window_open_positions,
         )
         output[name] = summarize(
             trades, window_signals, skipped, window_bars,
-            start_time.date(), end_time.date(),
+            start_time.date(), end_time.date(), window_open_positions,
         )
     return output
 
@@ -434,22 +509,21 @@ def main() -> int:
         parser.error("Set GOLD_TWELVE_DATA_API_KEY in the project-root .env; do not paste it into chat or commit it.")
     os.environ["GOLD_TIMEFRAME"] = args.timeframe
     try:
-        warmup_start = start - timedelta(seconds=WARMUP_BARS * TIMEFRAMES[args.timeframe][1])
-        bars = fetch_history(key, args.timeframe, warmup_start, end, requests.Session())
+        bars, warmup_count = fetch_history_with_warmup(
+            key, args.timeframe, start, end, requests.Session(),
+        )
         start_utc = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
-        warmup_count = sum(bar["time"] < start_utc for bar in bars)
-        if warmup_count < WARMUP_BARS:
-            raise RuntimeError(
-                f"Only {warmup_count} of {WARMUP_BARS} required warm-up candles are available before {start.isoformat()}; "
-                "choose a later test start or a provider plan with deeper history."
-            )
         all_signals = generate_signals(bars, args.atr_multiplier, args.tp1_r, args.tp2_r)
         signals = select_test_window_signals(all_signals, start)
+        open_positions: list[dict[str, Any]] = []
         trades, skipped = simulate(
             bars, signals, args.cost_per_side,
             signal_ttl_candles=args.signal_ttl_candles,
+            open_positions=open_positions,
         )
-        report = summarize(trades, signals, skipped, bars, start, end)
+        report = summarize(
+            trades, signals, skipped, bars, start, end, open_positions,
+        )
         report["signal_ttl_candles"] = args.signal_ttl_candles
         report["warmup_bars_requested"] = WARMUP_BARS
         report["warmup_candles_downloaded"] = warmup_count
@@ -473,8 +547,22 @@ def main() -> int:
             writer = csv.DictWriter(handle, fieldnames=fields)
             writer.writeheader()
             writer.writerows(trades)
+        open_out = out.with_name(out.stem + "_open_positions.csv")
+        with open_out.open("w", newline="", encoding="utf-8-sig") as handle:
+            fields = list(open_positions[0]) if open_positions else [
+                "signal_time", "side", "entry", "stop", "tp1", "tp2",
+                "mark_time", "mark_price", "bars_held", "ttl_candles",
+                "bars_until_expiry", "remaining_fraction", "tp1_hit",
+                "realized_r", "unrealized_r", "total_marked_r",
+            ]
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(open_positions)
         print(json.dumps(report, indent=2))
-        print(f"Saved: {out.with_suffix('.json')} and {out.with_suffix('.csv')}")
+        print(
+            f"Saved: {out.with_suffix('.json')}, {out.with_suffix('.csv')}, "
+            f"and {open_out}"
+        )
         return 0
     except Exception as exc:
         print(f"Backtest failed: {exc}", file=sys.stderr)
