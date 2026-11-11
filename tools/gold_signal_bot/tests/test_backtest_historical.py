@@ -7,7 +7,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from backtest_historical import simulate, validate_history_continuity  # noqa: E402
+from backtest_historical import (  # noqa: E402
+    select_test_window_signals, simulate, validate_history_continuity,
+)
 
 
 def candle(index: int, *, open_: float = 100.0, high: float = 100.0,
@@ -68,6 +70,18 @@ class HistoricalBacktestExecutionTests(unittest.TestCase):
         self.assertEqual(len(trades), 1)
         self.assertEqual(trades[0]["exit_reason"], "SL")
         self.assertAlmostEqual(trades[0]["net_r"], -1.0, places=6)
+
+
+class HistoricalWarmupTests(unittest.TestCase):
+    def test_warmup_signals_are_excluded_but_test_window_signals_remain(self) -> None:
+        start = datetime(2026, 1, 2, tzinfo=timezone.utc).date()
+        signals = [
+            {"signal_time": datetime(2026, 1, 1, 23, 45, tzinfo=timezone.utc)},
+            {"signal_time": datetime(2026, 1, 2, 0, 0, tzinfo=timezone.utc)},
+            {"signal_time": datetime(2026, 1, 2, 0, 15, tzinfo=timezone.utc)},
+        ]
+        selected = select_test_window_signals(signals, start)
+        self.assertEqual(selected, signals[1:])
 
 
 class HistoricalDataContinuityTests(unittest.TestCase):
