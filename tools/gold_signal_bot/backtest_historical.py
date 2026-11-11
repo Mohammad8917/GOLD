@@ -20,7 +20,9 @@ from typing import Any
 import requests
 from dotenv import load_dotenv
 
-from gold_signal.config import DEFAULT_SIGNAL_TTL_CANDLES, TIMEFRAMES
+from gold_signal.config import (
+    DEFAULT_SIGNAL_TTL_CANDLES, TIMEFRAMES, default_signal_ttl_candles,
+)
 from gold_signal.market_data import _is_expected_gold_pause
 from gold_signal.strategy import detect_signals
 
@@ -168,9 +170,15 @@ def generate_signals(bars: list[dict[str, Any]], atr_mult: float,
 
 def simulate(bars: list[dict[str, Any]], signals: list[dict[str, Any]],
              cost_per_side: float, *,
-             signal_ttl_candles: int = DEFAULT_SIGNAL_TTL_CANDLES
+             signal_ttl_candles: int | None = None
              ) -> tuple[list[dict[str, Any]], int]:
     """One position at a time; TP/SL first, then close remaining size at TTL close."""
+    timeframe = os.getenv("GOLD_TIMEFRAME", "15min")
+    if signal_ttl_candles is None:
+        ttl_override = os.getenv("SIGNAL_TTL_CANDLES", "").strip()
+        signal_ttl_candles = (
+            int(ttl_override) if ttl_override else default_signal_ttl_candles(timeframe)
+        )
     if type(signal_ttl_candles) is not int or signal_ttl_candles < 1:
         raise ValueError("signal_ttl_candles must be a positive integer")
     trades: list[dict[str, Any]] = []
@@ -218,7 +226,8 @@ def simulate(bars: list[dict[str, Any]], signals: list[dict[str, Any]],
                 realized_r += remaining * (
                     sign * (bar["close"] - sig["entry"]) - cost_per_side
                 ) / risk
-                exit_reason, exit_time, exit_index = "EXPIRED", bar["time"].isoformat(), j
+                close_time = bar["time"] + timedelta(seconds=TIMEFRAMES[timeframe][1])
+                exit_reason, exit_time, exit_index = "EXPIRED", close_time.isoformat(), j
                 break
         if exit_reason == "OPEN_AT_END":
             # Keep the position open through the end; later signals cannot overlap it.
@@ -347,7 +356,7 @@ def evaluate_chronological_holdout(
     bars: list[dict[str, Any]], signals: list[dict[str, Any]],
     cost_per_side: float, *, development_fraction: float = 0.70,
     minimum_bars: int = 100,
-    signal_ttl_candles: int = DEFAULT_SIGNAL_TTL_CANDLES,
+    signal_ttl_candles: int | None = None,
 ) -> dict[str, Any]:
     """Evaluate fixed rules on a chronological development/untouched holdout split."""
     if not 0.5 <= development_fraction < 0.9:
@@ -404,9 +413,15 @@ def main() -> int:
     parser.add_argument("--tp1-r", type=float, default=float(os.getenv("GOLD_TP1_R", "1.0")))
     parser.add_argument("--tp2-r", type=float, default=float(os.getenv("GOLD_TP2_R", "2.0")))
     parser.add_argument("--cost-per-side", type=float, default=0.0, help="Estimated spread/slippage cost in XAU/USD price units per side; 0 means costs omitted.")
-    parser.add_argument("--signal-ttl-candles", type=int, default=int(os.getenv("SIGNAL_TTL_CANDLES", str(DEFAULT_SIGNAL_TTL_CANDLES))), help="Close unresolved signals after this many completed candles (default: 24).")
+    parser.add_argument("--signal-ttl-candles", type=int, default=None, help="Override signal lifetime in candles; default is one day scaled to the selected timeframe.")
     parser.add_argument("--out", default="gold_backtest")
     args = parser.parse_args()
+    if args.signal_ttl_candles is None:
+        ttl_override = os.getenv("SIGNAL_TTL_CANDLES", "").strip()
+        args.signal_ttl_candles = (
+            int(ttl_override) if ttl_override
+            else default_signal_ttl_candles(args.timeframe)
+        )
     start, end = date.fromisoformat(args.start), date.fromisoformat(args.end)
     numeric = (args.atr_multiplier, args.tp1_r, args.tp2_r, args.cost_per_side)
     if (end < start or not all(math.isfinite(v) for v in numeric)
