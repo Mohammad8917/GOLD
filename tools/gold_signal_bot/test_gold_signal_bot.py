@@ -320,6 +320,7 @@ class FetchTests(unittest.TestCase):
         params = session.get.call_args.kwargs["params"]
         self.assertEqual(params["symbol"], "XAU/USD")
         self.assertEqual(params["interval"], "15min")
+        self.assertEqual(params["outputsize"], 5000)
         self.assertEqual(params["apikey"], "api-key")
 
     def test_provider_error_payload_is_reported(self):
