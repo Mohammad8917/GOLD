@@ -65,7 +65,7 @@ class CatchupTests(unittest.TestCase):
             ]
             with patch("gold_signal.service.fetch_closed_candles", return_value=candles), \
                  patch("gold_signal.service.detect_signals", return_value=signals), \
-                 patch("gold_signal.service.send_telegram") as send, \
+                 patch("gold_signal.service.send_telegram", side_effect=[111, 112]) as send, \
                  patch("gold_signal.service.format_signal", side_effect=lambda d, _tf: str(d)):
                 result = run_once(config(state))
             self.assertEqual(result, "sent_catchup")
