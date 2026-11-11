@@ -8,7 +8,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from gold_signal.service import run_once, INDICATOR_WARMUP_BARS
 from gold_signal.state import read_state, write_state
-from tests.helpers.telegram_mock import mock_send_success
+from tests.helpers.telegram_mock import mock_send_success_sequence
 
 def bars(count: int = 202) -> list[dict]:
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -66,7 +66,7 @@ class CatchupTests(unittest.TestCase):
             ]
             with patch("gold_signal.service.fetch_closed_candles", return_value=candles), \
                  patch("gold_signal.service.detect_signals", return_value=signals), \
-                 patch("gold_signal.service.send_telegram", side_effect=[111, 112]) as send, \
+                 patch("gold_signal.service.send_telegram", new=mock_send_success_sequence([111, 112])) as send, \
                  patch("gold_signal.service.format_signal", side_effect=lambda d, _tf: str(d)):
                 result = run_once(config(state))
             self.assertEqual(result, "sent_catchup")
