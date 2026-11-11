@@ -692,6 +692,17 @@ class RunOnceTests(unittest.TestCase):
             sender.assert_called_once()
             self.assertEqual(read_state(config.state_file), candles[-1]["time"].isoformat())
 
+    def test_history_gap_fails_closed_instead_of_silently_skipping(self):
+        with TemporaryDirectory() as folder:
+            config = self.make_config(folder)
+            candles = self.make_candles()
+            write_state(config.state_file, candles[0]["time"] - timedelta(minutes=15))
+            with patch("gold_signal.service.fetch_closed_candles", return_value=candles), \
+                 patch("gold_signal.service.detect_signals") as detect:
+                with self.assertRaisesRegex(RuntimeError, "older than available"):
+                    run_once(config)
+            detect.assert_not_called()
+
     def test_failed_telegram_send_does_not_advance_cursor(self):
         with TemporaryDirectory() as folder:
             config = self.make_config(folder)
