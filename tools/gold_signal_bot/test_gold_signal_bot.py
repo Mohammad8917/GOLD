@@ -686,7 +686,7 @@ class RunOnceTests(unittest.TestCase):
             with patch("gold_signal.service.fetch_closed_candles", return_value=candles), \
                  patch("gold_signal.service.detect_signals", return_value=[data]), \
                  patch("gold_signal.service.format_signal", return_value="test message"), \
-                 patch("gold_signal.service.send_telegram") as sender:
+                 patch("gold_signal.service.send_telegram", return_value=123) as sender:
                 result = run_once(config)
             self.assertEqual(result, "sent")
             sender.assert_called_once()
