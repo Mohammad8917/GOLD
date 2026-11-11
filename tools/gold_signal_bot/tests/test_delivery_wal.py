@@ -11,7 +11,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import requests
 
@@ -124,10 +124,14 @@ class DeliveryWalTests(unittest.TestCase):
         )
 
     def test_ambiguous_timeout_keeps_cursor_and_retries_with_visible_marker(self):
-        send_mock, accepted_by_telegram = mock_send_crash_after_accept()
+        accepted_by_telegram = []
+
+        def accepted_then_response_lost(*_args, **_kwargs):
+            accepted_by_telegram.append("telegram accepted message")
+            raise requests.Timeout("response lost after remote acceptance")
 
         with self.run_with_signal(), patch(
-            "gold_signal.service.send_telegram", new=send_mock,
+            "gold_signal.service.send_telegram", new=Mock(side_effect=accepted_then_response_lost),
         ):
             with self.assertRaises(requests.Timeout):
                 run_once(self.config)
@@ -278,7 +282,7 @@ class DeliveryWalTests(unittest.TestCase):
             self.assertEqual(run_once(self.config), "sent")
         self.assertFalse(sender.call_args.args[1].startswith("<b>[RECOVERY RETRY]</b>"))
 
-    def test_crash_after_sending_before_telegram_call_recovers_as_unknown(self):
+    def test_crash_after_telegram_accept_before_wal_sent_recovers_as_unknown(self):
         crash_mock, accepted = mock_send_crash_after_accept()
         with self.run_with_signal(), patch(
             "gold_signal.service.send_telegram", new=crash_mock,
