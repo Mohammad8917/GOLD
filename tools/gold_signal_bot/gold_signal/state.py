@@ -60,7 +60,7 @@ def outbox_path(state_path: Path) -> Path:
     return state_path.with_name(state_path.name + ".outbox.json")
 
 
-def _validate_records(records: object) -> dict[str, dict]:
+def _validate_records(records: object, *, require_sent_message_id: bool = True) -> dict[str, dict]:
     if not isinstance(records, dict):
         raise ValueError("WAL records must be a JSON object")
     validated: dict[str, dict] = {}
@@ -72,7 +72,7 @@ def _validate_records(records: object) -> dict[str, dict]:
         status = record.get("status")
         if status not in _VALID_STATUSES:
             raise ValueError(f"WAL record {key} has invalid status: {status!r}")
-        if status == "SENT":
+        if status == "SENT" and require_sent_message_id:
             message_id = record.get("telegram_message_id")
             if type(message_id) is not int or message_id <= 0:
                 raise ValueError(f"WAL SENT record {key} lacks a valid Telegram message_id")
@@ -96,7 +96,7 @@ def read_outbox(state_path: Path) -> dict[str, dict]:
             raise ValueError("WAL root must be a JSON object")
 
         if "wal_version" not in value and "records" not in value:
-            records = _validate_records(value)
+            records = _validate_records(value, require_sent_message_id=False)
             now = datetime.now(timezone.utc).isoformat()
             for key, record in records.items():
                 if record.get("status") == "SENT":
