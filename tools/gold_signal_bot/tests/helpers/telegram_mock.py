@@ -41,3 +41,11 @@ def mock_send_crash_after_accept() -> tuple[Mock, list[str]]:
         raise SimulatedTelegramProcessCrash("process terminated after remote acceptance")
 
     return Mock(side_effect=accepted_then_crash), accepted
+
+
+
+def mock_send_success_sequence(message_ids: list[int]) -> Mock:
+    """Simulate an ordered series of successful Telegram message IDs."""
+    if not message_ids or any(type(value) is not int or value <= 0 for value in message_ids):
+        raise ValueError("message_ids must contain positive integers")
+    return Mock(side_effect=list(message_ids))
