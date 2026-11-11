@@ -29,12 +29,13 @@ python tools\gold_signal_bot\backtest_historical.py --start 2025-11-11 --end 202
 
 Optional cost model: pass `--cost-per-side 0.20` to deduct an estimated 0.20 XAU/USD price units per side (entry and exit). This is only an example; use a realistic spread/slippage estimate for the actual broker/price feed you intend to compare against. Default zero costs are optimistic and must not be presented as live performance.
 
-The script downloads date-bounded chunks, sorts/deduplicates candles, discards still-open candles, and refuses to simulate across unexplained intraday data gaps. Expected weekend/maintenance closures are treated separately; daily bars may naturally skip weekends. It saves:
+The script downloads date-bounded chunks plus 200 pre-test warm-up candles for indicator seeding, sorts/deduplicates candles, discards still-open candles, and refuses to simulate across unexplained intraday data gaps. If 200 warm-up candles are unavailable, it stops rather than calculating indicators from an incomplete seed. Expected weekend/maintenance closures are treated separately; daily bars may naturally skip weekends. It saves:
 - `reports\xauusd_1y.json`: aggregate metrics and methodology.
 - `reports\xauusd_1y.csv`: completed trade-by-trade results.
 
 ## Backtest assumptions and limitations
 
+- The 200 candles before the requested start date are used only to warm up EMA/RSI/ATR; signals before the requested test window are excluded.
 - Entry is the signal candle's closing price; this is a bar-close model, not a guaranteed executable fill.
 - The strategy uses EMA20/EMA50, RSI14, ATR14, ATR stop, TP1=1R and TP2=2R defaults.
 - One position at a time. A signal while a position is open is counted as skipped.
