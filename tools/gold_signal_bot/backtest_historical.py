@@ -12,7 +12,6 @@ import math
 import os
 import sys
 import time
-from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -133,7 +132,7 @@ def simulate(bars: list[dict[str, Any]], signals: list[dict[str, Any]],
         exit_index = len(bars) - 1
         for j in range(idx + 1, len(bars)):
             bar = bars[j]
-            # Costs are expressed in XAU/USD price units and charged on entry+exit.
+            # Entry cost was charged once above; each exit leg pays one exit cost.
             stop_hit = bar["low"] <= sig["stop"] if sign == 1 else bar["high"] >= sig["stop"]
             tp1_hit = bar["high"] >= sig["tp1"] if sign == 1 else bar["low"] <= sig["tp1"]
             tp2_hit = bar["high"] >= sig["tp2"] if sign == 1 else bar["low"] <= sig["tp2"]
@@ -166,10 +165,6 @@ def simulate(bars: list[dict[str, Any]], signals: list[dict[str, Any]],
         })
         busy_until = exit_index
     return trades, skipped_overlap
-
-
-def tp1_r_value(sig: dict[str, Any]) -> float:
-    return abs(sig["tp1"] - sig["entry"]) / sig["risk"]
 
 
 def summarize(trades: list[dict[str, Any]], signals: list[dict[str, Any]],
