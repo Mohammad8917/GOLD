@@ -25,6 +25,20 @@ def replace_once(source: str, old: str, new: str, label: str) -> str:
 
 MUTATIONS = [
     {
+        "label": "flat-market RSI forced to 100",
+        "path": "gold_signal/indicators.py",
+        "old": "return 50.0",
+        "new": "return 100.0",
+        "test": "test_gold_signal_bot.IndicatorTests.test_rsi_flat_market_is_neutral",
+    },
+    {
+        "label": "outage history-gap guard disabled",
+        "path": "gold_signal/service.py",
+        "old": "if cursor < first_time:",
+        "new": "if False and cursor < first_time:",
+        "test": "test_gold_signal_bot.RunOnceTests.test_history_gap_fails_closed_instead_of_silently_skipping",
+    },
+    {
         "label": "BUY cross direction inverted",
         "path": "gold_signal/strategy.py",
         "old": "close > fast[i] and fast[i] > slow[i]",
