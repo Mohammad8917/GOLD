@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from backtest_historical import simulate  # noqa: E402
+from backtest_historical import simulate, validate_history_continuity  # noqa: E402
 
 
 def candle(index: int, *, open_: float = 100.0, high: float = 100.0,
@@ -68,6 +68,31 @@ class HistoricalBacktestExecutionTests(unittest.TestCase):
         self.assertEqual(len(trades), 1)
         self.assertEqual(trades[0]["exit_reason"], "SL")
         self.assertAlmostEqual(trades[0]["net_r"], -1.0, places=6)
+
+
+class HistoricalDataContinuityTests(unittest.TestCase):
+    def test_unexplained_intraday_gap_fails_closed(self) -> None:
+        bars = [candle(0), candle(5)]  # 75-minute gap on a 15-minute series
+        with self.assertRaisesRegex(RuntimeError, "Unexpected historical data gap"):
+            validate_history_continuity(bars, "15min")
+
+    def test_expected_weekend_closure_is_allowed(self) -> None:
+        friday_close = datetime(2026, 1, 2, 20, 15, tzinfo=timezone.utc)
+        sunday_open = datetime(2026, 1, 4, 22, 0, tzinfo=timezone.utc)
+        bars = [
+            {"time": friday_close, "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0},
+            {"time": sunday_open, "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0},
+        ]
+        validate_history_continuity(bars, "15min")
+
+    def test_daily_timeframe_allows_calendar_weekend_gaps(self) -> None:
+        friday = datetime(2026, 1, 2, tzinfo=timezone.utc)
+        monday = datetime(2026, 1, 5, tzinfo=timezone.utc)
+        bars = [
+            {"time": friday, "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0},
+            {"time": monday, "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0},
+        ]
+        validate_history_continuity(bars, "1day")
 
 
 if __name__ == "__main__":
