@@ -1,0 +1,25 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Python environments and bytecode
+.venv/
+.venv-*/
+venv/
+__pycache__/
+*.py[cod]
+
+# Logs and local state
+*.log
+gold-signal-state.json*
+gold-signal-state.lock
+.gold-signal-state*
+*.lock
+
+# Test and tooling artifacts
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

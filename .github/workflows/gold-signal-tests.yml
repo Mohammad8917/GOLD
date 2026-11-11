@@ -1,0 +1,63 @@
+name: GOLD Signal Bot Tests
+
+on:
+  push:
+    branches:
+      - main
+      - import/gold-signal-bot
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "tools/gold_signal_bot/**"
+      - ".github/workflows/gold-signal-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  offline-tests:
+    name: GOLD offline tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install bot dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r tools/gold_signal_bot/requirements.txt
+
+      - name: Verify modular package imports
+        run: |
+          python -c "import sys; sys.path.insert(0, 'tools/gold_signal_bot'); from gold_signal import config, indicators, market_data, service, state, strategy, telegram; print('GOLD architecture imports: OK')"
+
+      - name: Compile all bot modules
+        run: |
+          python -m compileall -q tools/gold_signal_bot
+
+      - name: Compile bot and test module
+        run: |
+          python -m py_compile tools/gold_signal_bot/gold_signal_bot.py tools/gold_signal_bot/test_gold_signal_bot.py
+
+      - name: Smoke-test legacy command entry point
+        run: |
+          python tools/gold_signal_bot/gold_signal_bot.py --help
+
+      - name: Run complete offline test suite
+        run: |
+          python -m unittest discover -s tools/gold_signal_bot -p "test_*.py" -v
+
+      - name: Run critical-path mutation audit
+        run: |
+          python tools/gold_signal_bot/mutation_audit.py
