@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import sys
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backtest_historical import simulate  # noqa: E402
+from backtest_historical import simulate, summarize  # noqa: E402
 
 
 def candle(index: int, *, close: float = 104.0, high: float = 105.0,
@@ -47,6 +47,18 @@ class OpenPositionReportingTests(unittest.TestCase):
         self.assertAlmostEqual(position["unrealized_r"], 0.4, places=6)
         self.assertAlmostEqual(position["total_marked_r"], 0.4, places=6)
         self.assertEqual(position["bars_until_expiry"], 19)
+        self.assertEqual(
+            position["mark_time"],
+            (bars[-1]["time"] + timedelta(hours=1)).isoformat(),
+        )
+        report = summarize(
+            trades, [signal()], skipped, bars,
+            date(2026, 3, 1), date(2026, 3, 1), open_positions,
+        )
+        self.assertEqual(report["completed_trades"], 0)
+        self.assertEqual(report["open_positions_count"], 1)
+        self.assertEqual(report["unfinished_positions_excluded"], 1)
+        self.assertIsNotNone(report["open_position_warning"])
 
     def test_partial_tp1_reports_realized_and_remaining_unrealized_components(self) -> None:
         bars = [candle(i) for i in range(6)]
