@@ -43,7 +43,9 @@ def fetch_history(api_key: str, timeframe: str, start: date, end: date,
     cursor = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
     final = datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
     candles: dict[datetime, dict[str, Any]] = {}
+    now = datetime.now(timezone.utc)
     while cursor < final:
+        chunk_start = cursor
         chunk_end = min(final, cursor + timedelta(days=chunk_days))
         params = {
             "symbol": "XAU/USD", "interval": timeframe, "timezone": "UTC",
@@ -60,15 +62,18 @@ def fetch_history(api_key: str, timeframe: str, start: date, end: date,
         values = payload.get("values")
         if not isinstance(values, list):
             raise RuntimeError(f"No historical values returned: {str(payload)[:300]}")
-        if len(values) >= 5000:
-            raise RuntimeError("Provider returned 5,000 rows for one chunk; reduce chunk size and rerun.")
+        if len(values) >= 4000:
+            raise RuntimeError("Provider returned at least 4,000 rows for one chunk; reduce chunk size and rerun to avoid silent truncation.")
         for item in values:
             stamp = parse_time(str(item["datetime"]))
             bar = {"time": stamp, **{k: float(item[k]) for k in ("open", "high", "low", "close")}}
             o, h, low, close = (bar[k] for k in ("open", "high", "low", "close"))
             if not all(math.isfinite(v) for v in (o, h, low, close)) or low <= 0 or h < max(o, low, close) or low > min(o, close):
                 raise RuntimeError(f"Invalid OHLC candle at {stamp.isoformat()}")
-            if cursor <= stamp < final and stamp + timedelta(seconds=seconds) <= datetime.now(timezone.utc):
+            if chunk_start <= stamp < chunk_end and stamp + timedelta(seconds=seconds) <= now:
+                previous = candles.get(stamp)
+                if previous is not None and any(previous[k] != bar[k] for k in ("open", "high", "low", "close")):
+                    raise RuntimeError(f"Conflicting duplicate candle at {stamp.isoformat()}")
                 candles[stamp] = bar
         cursor = chunk_end
         time.sleep(0.15)  # modest pacing across historical requests
@@ -120,7 +125,8 @@ def simulate(bars: list[dict[str, Any]], signals: list[dict[str, Any]],
             continue
         sign, risk = (1 if sig["side"] == "BUY" else -1), sig["risk"]
         remaining = 1.0
-        realized_r = 0.0
+        # Charge entry once for the full position; charge each partial exit once.
+        realized_r = -cost_per_side / risk
         tp1_done = False
         exit_reason = "OPEN_AT_END"
         exit_time = ""
@@ -133,16 +139,18 @@ def simulate(bars: list[dict[str, Any]], signals: list[dict[str, Any]],
             tp2_hit = bar["high"] >= sig["tp2"] if sign == 1 else bar["low"] <= sig["tp2"]
             if stop_hit:
                 fill = min(bar["open"], sig["stop"]) if sign == 1 else max(bar["open"], sig["stop"])
-                realized_r += remaining * (sign * (fill - sig["entry"]) - 2 * cost_per_side) / risk
+                realized_r += remaining * (sign * (fill - sig["entry"]) - cost_per_side) / risk
                 exit_reason, exit_time, exit_index = "SL", bar["time"].isoformat(), j
                 break
             if tp1_hit and not tp1_done:
-                realized_r += 0.5 * (tp1_r_value(sig) - 2 * cost_per_side / risk)
+                # Favorable opening gaps receive the better executable bar-open price.
+                tp1_fill = max(bar["open"], sig["tp1"]) if sign == 1 else min(bar["open"], sig["tp1"])
+                realized_r += 0.5 * (sign * (tp1_fill - sig["entry"]) / risk - cost_per_side / risk)
                 remaining = 0.5
                 tp1_done = True
             if tp2_hit:
                 fill = max(bar["open"], sig["tp2"]) if sign == 1 else min(bar["open"], sig["tp2"])
-                realized_r += remaining * (sign * (fill - sig["entry"]) - 2 * cost_per_side) / risk
+                realized_r += remaining * (sign * (fill - sig["entry"]) - cost_per_side) / risk
                 exit_reason, exit_time, exit_index = "TP2", bar["time"].isoformat(), j
                 break
         if exit_reason == "OPEN_AT_END":
@@ -214,8 +222,11 @@ def main() -> int:
     parser.add_argument("--out", default="gold_backtest")
     args = parser.parse_args()
     start, end = date.fromisoformat(args.start), date.fromisoformat(args.end)
-    if end <= start or args.atr_multiplier <= 0 or args.tp1_r <= 0 or args.tp2_r <= args.tp1_r or args.cost_per_side < 0:
-        parser.error("Require end > start, positive ATR/TP1, TP2 > TP1, and nonnegative costs.")
+    numeric = (args.atr_multiplier, args.tp1_r, args.tp2_r, args.cost_per_side)
+    if (end < start or not all(math.isfinite(v) for v in numeric)
+            or args.atr_multiplier <= 0 or args.tp1_r <= 0
+            or args.tp2_r <= args.tp1_r or args.cost_per_side < 0):
+        parser.error("Require end >= start, finite positive ATR/TP1, TP2 > TP1, and finite nonnegative costs.")
     key = os.getenv("GOLD_TWELVE_DATA_API_KEY", "").strip()
     if not key:
         parser.error("Set GOLD_TWELVE_DATA_API_KEY in the project-root .env; do not paste it into chat or commit it.")
