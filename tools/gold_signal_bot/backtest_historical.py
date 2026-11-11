@@ -21,7 +21,7 @@ import requests
 from dotenv import load_dotenv
 
 from gold_signal.config import (
-    DEFAULT_SIGNAL_TTL_CANDLES, TIMEFRAMES, default_signal_ttl_candles,
+    TIMEFRAMES, default_signal_ttl_candles,
 )
 from gold_signal.market_data import _is_expected_gold_pause
 from gold_signal.strategy import detect_signals
