@@ -16,6 +16,11 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from gold_signal.service import run_once
 from gold_signal.state import read_outbox, read_state, outbox_path, write_outbox, write_state
+from gold_signal import state as state_module
+
+
+class SimulatedProcessCrash(BaseException):
+    """Bypass normal exception handling to model abrupt process termination."""
 
 
 STRATEGY_VERSION = "ema20-ema50-rsi14-atr14-v1"
@@ -202,6 +207,101 @@ class DeliveryWalTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Delivery WAL is unreadable"):
                 run_once(self.config)
         self.assertEqual(read_state(self.state_path), "")
+
+    def test_success_response_without_message_id_is_unknown_then_retried(self):
+        with self.run_with_signal(), patch(
+            "gold_signal.service.send_telegram", return_value=None,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "without a valid message_id"):
+                run_once(self.config)
+
+        key = signal_key(self.signal)
+        self.assertEqual(read_state(self.state_path), "")
+        record = read_outbox(self.state_path)[key]
+        self.assertEqual(record["status"], "UNKNOWN")
+        self.assertIsNone(record["telegram_message_id"])
+        self.assertIn("without a valid message_id", record["last_error"])
+
+        with self.run_with_signal(), patch(
+            "gold_signal.service.send_telegram", return_value=989,
+        ) as sender:
+            self.assertEqual(run_once(self.config), "sent")
+        self.assertTrue(sender.call_args.args[1].startswith("<b>[RECOVERY RETRY]</b>"))
+        sent = read_outbox(self.state_path)[key]
+        self.assertEqual(sent["status"], "SENT")
+        self.assertEqual(sent["telegram_message_id"], 989)
+
+    def test_crash_before_sending_transition_leaves_pending_for_normal_send(self):
+        real_write = write_outbox
+        calls = 0
+
+        def crash_before_second_wal_write(path, records):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise SimulatedProcessCrash("crash before SENDING persisted")
+            real_write(path, records)
+
+        with self.run_with_signal(), patch(
+            "gold_signal.service.write_outbox", side_effect=crash_before_second_wal_write,
+        ), patch("gold_signal.service.send_telegram") as sender:
+            with self.assertRaises(SimulatedProcessCrash):
+                run_once(self.config)
+            sender.assert_not_called()
+
+        key = signal_key(self.signal)
+        self.assertEqual(read_outbox(self.state_path)[key]["status"], "PENDING")
+        with self.run_with_signal(), patch(
+            "gold_signal.service.send_telegram", return_value=990,
+        ) as sender:
+            self.assertEqual(run_once(self.config), "sent")
+        self.assertFalse(sender.call_args.args[1].startswith("<b>[RECOVERY RETRY]</b>"))
+
+    def test_crash_after_sending_before_telegram_call_recovers_as_unknown(self):
+        with self.run_with_signal(), patch(
+            "gold_signal.service.send_telegram", side_effect=SimulatedProcessCrash("terminated"),
+        ) as sender:
+            with self.assertRaises(SimulatedProcessCrash):
+                run_once(self.config)
+            sender.assert_called_once()
+
+        key = signal_key(self.signal)
+        self.assertEqual(read_outbox(self.state_path)[key]["status"], "SENDING")
+        with self.run_with_signal(), patch(
+            "gold_signal.service.send_telegram", return_value=991,
+        ) as sender:
+            self.assertEqual(run_once(self.config), "sent")
+        self.assertTrue(sender.call_args.args[1].startswith("<b>[RECOVERY RETRY]</b>"))
+
+    def test_wal_atomic_replace_failure_preserves_previous_good_file(self):
+        key = signal_key(self.signal)
+        original = {key: {"status": "PENDING", "attempt_count": 1}}
+        write_outbox(self.state_path, original)
+        with patch.object(state_module.os, "replace", side_effect=OSError("simulated interrupted replace")):
+            with self.assertRaises(OSError):
+                write_outbox(self.state_path, {key: {"status": "SENT", "attempt_count": 2}})
+        self.assertEqual(read_outbox(self.state_path), original)
+
+    def test_sending_seen_outside_startup_recovery_fails_closed(self):
+        key = signal_key(self.signal)
+        write_outbox(self.state_path, {
+            key: {
+                "signal_id": key,
+                "signal_timestamp": self.signal["candle_time"].isoformat(),
+                "symbol": "XAU/USD",
+                "timeframe": "15min",
+                "status": "SENDING",
+                "attempt_count": 1,
+                "message": "original signal message",
+                "telegram_message_id": None,
+                "last_error": None,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        })
+        with self.run_with_signal(), patch(
+            "gold_signal.service._recover_startup_sending",
+        ), self.assertRaisesRegex(RuntimeError, "SENDING outside startup recovery"):
+            run_once(self.config)
 
     def test_initial_startup_logs_number_of_intentionally_ignored_bars(self):
         with patch(
