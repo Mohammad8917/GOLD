@@ -146,7 +146,8 @@ def simulate(bars: list[dict[str, Any]], signals: list[dict[str, Any]],
                 exit_reason, exit_time, exit_index = "TP2", bar["time"].isoformat(), j
                 break
         if exit_reason == "OPEN_AT_END":
-            # Do not pretend an unfinished trade is a win or loss.
+            # Keep the position open through the end; later signals cannot overlap it.
+            busy_until = len(bars) - 1
             continue
         trades.append({
             "signal_time": sig["signal_time"].isoformat(), "side": sig["side"],
