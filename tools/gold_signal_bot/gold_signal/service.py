@@ -157,7 +157,7 @@ def _process_due_expirations(
         recovery = record.get("expiry_status") == "UNKNOWN"
         message = record["expiry_message"]
         if recovery:
-            message = "<b>[RECOVERY RETRY]</b>\\n" + message
+            message = "<b>[RECOVERY RETRY]</b>\n" + message
 
         record["expiry_status"] = "SENDING"
         record["expiry_attempt_count"] = int(record.get("expiry_attempt_count", 0)) + 1
