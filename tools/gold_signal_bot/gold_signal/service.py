@@ -37,6 +37,9 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
                 (i for i, candle in enumerate(candles) if candle["time"] > cursor),
                 len(candles),
             )
+        if start_index >= len(candles):
+            LOG.info("No new confirmed GOLD signal on %s", config.timeframe)
+            return "no_signal"
         signals = {
             signal["candle_time"]: signal
             for signal in detect_signals(
