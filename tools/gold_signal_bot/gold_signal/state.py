@@ -127,7 +127,7 @@ def read_outbox(state_path: Path) -> dict[str, dict]:
         return _validate_records(value["records"])
     except FileNotFoundError:
         return {}
-    except (OSError, ValueError, AttributeError) as exc:
+    except (OSError, ValueError, TypeError, AttributeError) as exc:
         raise RuntimeError(
             "Delivery WAL is unreadable or uses an unsupported schema; refusing to risk duplicate or lost signals"
         ) from exc
