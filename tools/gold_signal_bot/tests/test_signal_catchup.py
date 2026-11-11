@@ -8,6 +8,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from gold_signal.service import run_once, INDICATOR_WARMUP_BARS
 from gold_signal.state import read_state, write_state
+from tests.helpers.telegram_mock import mock_send_success
 
 def bars(count: int = 202) -> list[dict]:
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
