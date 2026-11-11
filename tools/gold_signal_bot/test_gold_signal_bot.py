@@ -40,6 +40,22 @@ class IndicatorTests(unittest.TestCase):
         self.assertAlmostEqual(result[3], 75.0)
         self.assertTrue(all(0.0 <= value <= 100.0 for value in result if value is not None))
 
+    def test_rsi_flat_market_returns_50(self):
+        result = rsi([2500.0] * 40, period=14)
+        self.assertEqual(result[14:], [50.0] * (40 - 14))
+
+    def test_rsi_is_bounded_for_all_price_directions(self):
+        cases = (
+            [float(i) for i in range(40)],
+            [float(40 - i) for i in range(40)],
+            [2500.0] * 40,
+        )
+        for prices in cases:
+            with self.subTest(prices=prices[:3]):
+                result = rsi(prices, period=14)
+                self.assertTrue(all(0.0 <= value <= 100.0
+                                    for value in result if value is not None))
+
     def test_atr_matches_known_reference_value(self):
         bars = [
             {"open": 10.0, "high": 12.0, "low": 9.0, "close": 10.0},
