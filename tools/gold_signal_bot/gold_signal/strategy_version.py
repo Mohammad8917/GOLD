@@ -14,6 +14,15 @@ from typing import Mapping
 STRATEGY_VERSION = "ema20-ema50-rsi14-atr14-v1"
 STRATEGY_AST_HASH = "sha256:e6f806c4e13fdebdcca260a44b6290195915d5b888f337a48244c7be6d9ca977"
 
+# Append a new (version, hash) pair for every strategy/indicator logic change.
+# Never rewrite an existing release entry: it makes forgotten version bumps testable.
+STRATEGY_VERSION_HISTORY = (
+    (
+        "ema20-ema50-rsi14-atr14-v1",
+        "sha256:e6f806c4e13fdebdcca260a44b6290195915d5b888f337a48244c7be6d9ca977",
+    ),
+)
+
 
 def _remove_docstrings(tree: ast.AST) -> ast.AST:
     """Remove module/class/function docstrings before canonical AST dumping."""
