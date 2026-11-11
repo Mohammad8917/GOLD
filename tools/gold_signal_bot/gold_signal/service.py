@@ -10,6 +10,7 @@ import requests
 from .config import Config
 from .market_data import fetch_closed_candles, parse_bar_time
 from .strategy import detect_signals
+from .strategy_version import STRATEGY_VERSION
 from .state import (
     process_lock, read_outbox, read_state, write_outbox, write_state,
 )
@@ -18,7 +19,6 @@ from .telegram import format_signal, send_telegram
 LOG = logging.getLogger("gold_signal_bot")
 
 INDICATOR_WARMUP_BARS = 200
-STRATEGY_VERSION = "ema20-ema50-rsi14-atr14-v1"
 
 
 def _signal_id(signal: dict, timeframe: str) -> str:
@@ -34,6 +34,20 @@ def _redact_error(error: Exception, config: Config) -> str:
             value = value.replace(secret, "[REDACTED]")
     return value[:500]
 
+def _append_error_history(record: dict, *, signal_id: str, error: str, at: str) -> None:
+    """Keep the five most recent auditable delivery errors for one signal."""
+    history = record.setdefault("error_history", [])
+    if not isinstance(history, list):
+        history = []
+    history.append({
+        "signal_id": signal_id,
+        "timestamp": record.get("signal_timestamp", ""),
+        "at": at,
+        "error": str(error)[:500],
+    })
+    record["error_history"] = history[-5:]
+
+
 def _recover_startup_sending(outbox: dict[str, dict], state_path) -> None:
     """Convert records left SENDING by a previous process into retryable UNKNOWN."""
     changed = False
@@ -43,9 +57,9 @@ def _recover_startup_sending(outbox: dict[str, dict], state_path) -> None:
             continue
         record["status"] = "UNKNOWN"
         record["updated_at"] = now
-        record["last_error"] = record.get("last_error") or (
-            "Process stopped while delivery was marked SENDING; Telegram outcome is unknown"
-        )
+        recovery_error = "Process stopped while delivery was marked SENDING; Telegram outcome is unknown"
+        record["last_error"] = record.get("last_error") or recovery_error
+        _append_error_history(record, signal_id=key, error=recovery_error, at=now)
         record.setdefault("recovery_history", []).append({
             "at": now,
             "from": "SENDING",
@@ -168,6 +182,7 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
                         "message": message,
                         "telegram_message_id": None,
                         "last_error": None,
+                        "error_history": [],
                         "recovery_history": [],
                         "updated_at": datetime.now(timezone.utc).isoformat(),
                     }
@@ -181,7 +196,6 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
                 record["status"] = "SENDING"
                 record["attempt_count"] = int(record.get("attempt_count", 0)) + 1
                 record["updated_at"] = datetime.now(timezone.utc).isoformat()
-                record["last_error"] = None
                 outbox[key] = record
                 write_outbox(config.state_file, outbox)
 
@@ -202,6 +216,9 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
                     record["status"] = "FAILED" if definitive_rejection else "UNKNOWN"
                     record["last_error"] = _redact_error(exc, config)
                     record["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    _append_error_history(
+                        record, signal_id=key, error=record["last_error"], at=record["updated_at"],
+                    )
                     record.setdefault("recovery_history", []).append({
                         "at": record["updated_at"],
                         "from": "SENDING",
@@ -234,6 +251,9 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
                         "sendMessage returned success without a valid message_id"
                     )
                     record["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    _append_error_history(
+                        record, signal_id=key, error=record["last_error"], at=record["updated_at"],
+                    )
                     record.setdefault("recovery_history", []).append({
                         "at": record["updated_at"],
                         "from": "SENDING",
