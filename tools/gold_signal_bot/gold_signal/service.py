@@ -3,18 +3,18 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 
-from .config import Config
+from .config import Config, TIMEFRAMES
 from .market_data import fetch_closed_candles, parse_bar_time
 from .strategy import detect_signals
 from .strategy_version import STRATEGY_VERSION
 from .state import (
     process_lock, read_outbox, read_state, write_outbox, write_state,
 )
-from .telegram import format_signal, send_telegram
+from .telegram import format_expiry, format_signal, send_telegram
 
 LOG = logging.getLogger("gold_signal_bot")
 
@@ -49,30 +49,37 @@ def _append_error_history(record: dict, *, signal_id: str, error: str, at: str) 
 
 
 def _recover_startup_sending(outbox: dict[str, dict], state_path) -> None:
-    """Convert records left SENDING by a previous process into retryable UNKNOWN."""
+    """Recover ambiguous initial and expiry sends after a process restart."""
     changed = False
     now = datetime.now(timezone.utc).isoformat()
     for key, record in outbox.items():
-        if record.get("status") != "SENDING":
-            continue
-        record["status"] = "UNKNOWN"
-        record["updated_at"] = now
-        recovery_error = "Process stopped while delivery was marked SENDING; Telegram outcome is unknown"
-        record["last_error"] = record.get("last_error") or recovery_error
-        _append_error_history(record, signal_id=key, error=recovery_error, at=now)
-        record.setdefault("recovery_history", []).append({
-            "at": now,
-            "from": "SENDING",
-            "to": "UNKNOWN",
-            "decision": "startup recovery; retry with [RECOVERY RETRY]",
-        })
+        if record.get("status") == "SENDING":
+            record["status"] = "UNKNOWN"
+            record["updated_at"] = now
+            recovery_error = "Process stopped while delivery was marked SENDING; Telegram outcome is unknown"
+            record["last_error"] = record.get("last_error") or recovery_error
+            _append_error_history(record, signal_id=key, error=recovery_error, at=now)
+            record.setdefault("recovery_history", []).append({
+                "at": now, "from": "SENDING", "to": "UNKNOWN",
+                "decision": "startup recovery; retry with [RECOVERY RETRY]",
+            })
+            changed = True
+            LOG.error("Startup recovery: signal %s was left SENDING; retrying visibly", key)
+
+        if record.get("expiry_status") == "SENDING":
+            record["expiry_status"] = "UNKNOWN"
+            record["expiry_updated_at"] = now
+            recovery_error = "Process stopped while expiry notification was marked SENDING; Telegram outcome is unknown"
+            record["expiry_error"] = record.get("expiry_error") or recovery_error
+            _append_error_history(record, signal_id=key, error=recovery_error, at=now)
+            record.setdefault("recovery_history", []).append({
+                "at": now, "from": "EXPIRY_SENDING", "to": "EXPIRY_UNKNOWN",
+                "decision": "startup recovery; retry expiry with [RECOVERY RETRY]",
+            })
+            changed = True
+            LOG.error("Startup recovery: expiry notice for signal %s was ambiguous; retrying visibly", key)
+
         outbox[key] = record
-        changed = True
-        LOG.error(
-            "Startup recovery: signal %s was left SENDING; status is UNKNOWN; "
-            "decision: retry with [RECOVERY RETRY]",
-            key,
-        )
     if changed:
         write_outbox(state_path, outbox)
 
@@ -83,11 +90,140 @@ def _trim_sent_history(outbox: dict[str, dict], limit: int = 1000) -> None:
         (
             (record.get("updated_at", ""), key)
             for key, record in outbox.items()
-            if record.get("status") == "SENT"
+            if record.get("status") == "SENT" and record.get("lifecycle_status") == "EXPIRED"
         )
     )
     for _, key in sent[:-limit]:
         outbox.pop(key, None)
+
+
+def _process_due_expirations(
+    config: Config, candles: list[dict], outbox: dict[str, dict],
+    current_index: int, session: requests.Session | None,
+) -> int:
+    """Send durable expiry notices when a signal reaches its TTL candle."""
+    index_by_time = {bar["time"]: index for index, bar in enumerate(candles)}
+    sent_count = 0
+    interval = TIMEFRAMES[config.timeframe][1]
+
+    for key, record in list(outbox.items()):
+        if record.get("status") != "SENT" or record.get("lifecycle_status") == "EXPIRED":
+            continue
+        raw_stamp = record.get("signal_timestamp")
+        if not raw_stamp:
+            continue
+        signal_time = parse_bar_time(raw_stamp)
+        signal_index = index_by_time.get(signal_time)
+        if signal_index is None:
+            if signal_time < candles[0]["time"]:
+                raise RuntimeError(
+                    f"Cannot determine expiry for active signal {key}: its signal candle "
+                    "is older than retained market history; refusing silent expiry."
+                )
+            continue
+
+        expiry_index = signal_index + config.signal_ttl_candles
+        if expiry_index > current_index or expiry_index >= len(candles):
+            continue
+        expiry_bar = candles[expiry_index]
+        expiry_at = expiry_bar["time"] + timedelta(seconds=interval)
+
+        if record.get("expiry_status") == "SENT":
+            record["lifecycle_status"] = "EXPIRED"
+            record["expired_at"] = expiry_at.isoformat()
+            outbox[key] = record
+            write_outbox(config.state_file, outbox)
+            continue
+        if record.get("expiry_status") == "SENDING":
+            raise RuntimeError(
+                f"WAL invariant violation: expiry notification for signal {key} is SENDING outside startup recovery"
+            )
+
+        if not record.get("expiry_status"):
+            record["expiry_status"] = "PENDING"
+            record["expiry_message"] = format_expiry(
+                record, config.timeframe, expiry_at, float(expiry_bar["close"]),
+                config.signal_ttl_candles,
+            )
+            record["expiry_candle_time"] = expiry_bar["time"].isoformat()
+            record["expiry_at"] = expiry_at.isoformat()
+            record["expiry_close"] = float(expiry_bar["close"])
+            record["expiry_attempt_count"] = 0
+            record["expiry_message_id"] = None
+            record["expiry_error"] = None
+            outbox[key] = record
+            write_outbox(config.state_file, outbox)
+
+        recovery = record.get("expiry_status") == "UNKNOWN"
+        message = record["expiry_message"]
+        if recovery:
+            message = "<b>[RECOVERY RETRY]</b>\\n" + message
+
+        record["expiry_status"] = "SENDING"
+        record["expiry_attempt_count"] = int(record.get("expiry_attempt_count", 0)) + 1
+        record["expiry_updated_at"] = datetime.now(timezone.utc).isoformat()
+        outbox[key] = record
+        write_outbox(config.state_file, outbox)
+
+        try:
+            message_id = send_telegram(config, message, session=session)
+        except Exception as exc:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            definitive_rejection = (
+                isinstance(exc, RuntimeError) and str(exc).startswith("Telegram rejected")
+            ) or (
+                isinstance(exc, requests.HTTPError)
+                and isinstance(status_code, int) and 400 <= status_code < 500
+            )
+            record["expiry_status"] = "FAILED" if definitive_rejection else "UNKNOWN"
+            record["expiry_error"] = _redact_error(exc, config)
+            record["expiry_updated_at"] = datetime.now(timezone.utc).isoformat()
+            _append_error_history(
+                record, signal_id=key, error=record["expiry_error"],
+                at=record["expiry_updated_at"],
+            )
+            record.setdefault("recovery_history", []).append({
+                "at": record["expiry_updated_at"],
+                "from": "EXPIRY_SENDING",
+                "to": "EXPIRY_" + record["expiry_status"],
+                "decision": (
+                    "retry definitive rejection without recovery marker"
+                    if definitive_rejection else "retry ambiguous expiry send with [RECOVERY RETRY]"
+                ),
+            })
+            outbox[key] = record
+            write_outbox(config.state_file, outbox)
+            raise
+
+        if type(message_id) is not int or message_id <= 0:
+            record["expiry_status"] = "UNKNOWN"
+            record["expiry_error"] = "Expiry send succeeded without a valid Telegram message_id"
+            record["expiry_updated_at"] = datetime.now(timezone.utc).isoformat()
+            _append_error_history(
+                record, signal_id=key, error=record["expiry_error"],
+                at=record["expiry_updated_at"],
+            )
+            outbox[key] = record
+            write_outbox(config.state_file, outbox)
+            raise RuntimeError(
+                f"Expiry notification for signal {key} has UNKNOWN delivery outcome; "
+                "it will retry with [RECOVERY RETRY]"
+            )
+
+        record["expiry_status"] = "SENT"
+        record["expiry_message_id"] = message_id
+        record["expiry_updated_at"] = datetime.now(timezone.utc).isoformat()
+        record["lifecycle_status"] = "EXPIRED"
+        record["expired_at"] = expiry_at.isoformat()
+        outbox[key] = record
+        write_outbox(config.state_file, outbox)
+        sent_count += 1
+        LOG.info(
+            "Delivered expiry notice for signal %s at %s (Telegram message_id=%s)",
+            key, expiry_at.isoformat(), message_id,
+        )
+
+    return sent_count
 
 
 def run_once(config: Config, session: requests.Session | None = None) -> str:
@@ -129,6 +265,11 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
                 len(candles),
             )
         if start_index >= len(candles):
+            expiry_delivered = _process_due_expirations(
+                config, candles, outbox, len(candles) - 1, session,
+            )
+            if expiry_delivered:
+                return "expired"
             LOG.info("No new confirmed GOLD signal on %s", config.timeframe)
             return "no_signal"
         if start_index < INDICATOR_WARMUP_BARS:
@@ -152,6 +293,9 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
         processed = 0
         for index in range(start_index, len(candles)):
             stamp = candles[index]["time"]
+            delivered += _process_due_expirations(
+                config, candles, outbox, index, session,
+            )
             data = signals.get(stamp)
             if data:
                 key = _signal_id(data, config.timeframe)
@@ -181,6 +325,12 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
                         "attempt_count": 0,
                         "message": message,
                         "telegram_message_id": None,
+                        "side": data["side"],
+                        "entry": float(data["entry"]),
+                        "stop_loss": float(data["stop_loss"]),
+                        "take_profit_1": float(data["take_profit_1"]),
+                        "take_profit_2": float(data["take_profit_2"]),
+                        "lifecycle_status": "ACTIVE",
                         "last_error": None,
                         "error_history": [],
                         "recovery_history": [],
