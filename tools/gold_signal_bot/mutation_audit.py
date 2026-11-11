@@ -25,6 +25,13 @@ def replace_once(source: str, old: str, new: str, label: str) -> str:
 
 MUTATIONS = [
     {
+        "label": "flat-market RSI neutral value changed from 50 to 100",
+        "path": "gold_signal/indicators.py",
+        "old": "return 50.0",
+        "new": "return 100.0",
+        "test": "test_gold_signal_bot.IndicatorTests.test_rsi_flat_market_returns_50",
+    },
+    {
         "label": "BUY cross direction inverted",
         "path": "gold_signal/strategy.py",
         "old": "close > fast[i] and fast[i] > slow[i]",
