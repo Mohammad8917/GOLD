@@ -26,11 +26,22 @@ def rsi(values: list[float], period: int = 14) -> list[float | None]:
     losses = [max(values[i - 1] - values[i], 0.0) for i in range(1, len(values))]
     avg_gain = sum(gains[:period]) / period
     avg_loss = sum(losses[:period]) / period
-    out[period] = 100.0 if avg_loss == 0 else 100.0 - 100.0 / (1.0 + avg_gain / avg_loss)
+    def calculate_rsi(mean_gain: float, mean_loss: float) -> float:
+        # A completely flat market has neither gains nor losses: neutral RSI.
+        if mean_gain == 0.0 and mean_loss == 0.0:
+            return 50.0
+        if mean_loss == 0.0:
+            return 100.0
+        if mean_gain == 0.0:
+            return 0.0
+        relative_strength = mean_gain / mean_loss
+        return 100.0 - 100.0 / (1.0 + relative_strength)
+
+    out[period] = calculate_rsi(avg_gain, avg_loss)
     for i in range(period + 1, len(values)):
         avg_gain = (avg_gain * (period - 1) + gains[i - 1]) / period
         avg_loss = (avg_loss * (period - 1) + losses[i - 1]) / period
-        out[i] = 100.0 if avg_loss == 0 else 100.0 - 100.0 / (1.0 + avg_gain / avg_loss)
+        out[i] = calculate_rsi(avg_gain, avg_loss)
     return out
 
 
