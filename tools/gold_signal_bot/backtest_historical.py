@@ -24,6 +24,7 @@ from gold_signal.indicators import atr, ema, rsi
 from gold_signal.market_data import _is_expected_gold_pause
 
 API_URL = "https://api.twelvedata.com/time_series"
+WARMUP_BARS = 200
 
 
 def parse_time(value: str) -> datetime:
@@ -102,6 +103,12 @@ def fetch_history(api_key: str, timeframe: str, start: date, end: date,
         raise RuntimeError(f"Only {len(result)} closed candles downloaded; at least 100 are required.")
     validate_history_continuity(result, timeframe)
     return result
+
+
+def select_test_window_signals(signals: list[dict[str, Any]], start: date) -> list[dict[str, Any]]:
+    """Exclude warm-up-period entries while retaining their bars for indicator seeding."""
+    start_utc = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
+    return [signal for signal in signals if signal["signal_time"] >= start_utc]
 
 
 def generate_signals(bars: list[dict[str, Any]], atr_mult: float,
@@ -249,10 +256,22 @@ def main() -> int:
         parser.error("Set GOLD_TWELVE_DATA_API_KEY in the project-root .env; do not paste it into chat or commit it.")
     os.environ["GOLD_TIMEFRAME"] = args.timeframe
     try:
-        bars = fetch_history(key, args.timeframe, start, end, requests.Session())
-        signals = generate_signals(bars, args.atr_multiplier, args.tp1_r, args.tp2_r)
+        warmup_start = start - timedelta(seconds=WARMUP_BARS * TIMEFRAMES[args.timeframe][1])
+        bars = fetch_history(key, args.timeframe, warmup_start, end, requests.Session())
+        all_signals = generate_signals(bars, args.atr_multiplier, args.tp1_r, args.tp2_r)
+        signals = select_test_window_signals(all_signals, start)
         trades, skipped = simulate(bars, signals, args.cost_per_side)
         report = summarize(trades, signals, skipped, bars, start, end)
+        report["warmup_bars_requested"] = WARMUP_BARS
+        report["warmup_candles_downloaded"] = sum(
+            bar["time"] < datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
+            for bar in bars
+        )
+        report["first_test_candle"] = next(
+            (bar["time"].isoformat() for bar in bars
+             if bar["time"] >= datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)),
+            None,
+        )
         report["estimated_cost_per_side_price_units"] = args.cost_per_side
         out = Path(args.out)
         out.parent.mkdir(parents=True, exist_ok=True)
