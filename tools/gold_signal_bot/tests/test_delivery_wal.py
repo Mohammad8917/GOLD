@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import multiprocessing
+import os
 import sys
 import tempfile
 import unittest
@@ -18,6 +19,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from gold_signal.service import run_once
 from gold_signal.state import process_lock, read_outbox, read_state, outbox_path, write_outbox, write_state
 from gold_signal import state as state_module
+from tests.helpers.telegram_mock import (
+    mock_send_crash_after_accept, mock_send_fail, mock_send_success,
+    mock_send_success_no_id, mock_send_timeout,
+)
 
 
 class SimulatedProcessCrash(BaseException):
@@ -81,6 +86,12 @@ def signal_key(signal: dict, timeframe: str = "15min") -> str:
 
 
 
+def _multiprocess_crash_while_locked(state_path: str, ready) -> None:
+    with process_lock(Path(state_path)):
+        ready.set()
+        os._exit(23)
+
+
 def _multiprocess_lock_worker(state_path: str, ready, release, results) -> None:
     """Top-level worker so the test also runs under Windows spawn semantics."""
     try:
@@ -113,15 +124,10 @@ class DeliveryWalTests(unittest.TestCase):
         )
 
     def test_ambiguous_timeout_keeps_cursor_and_retries_with_visible_marker(self):
-        accepted_by_telegram = []
-
-        def accepted_then_response_lost(*_args, **_kwargs):
-            accepted_by_telegram.append("telegram accepted message")
-            raise requests.Timeout("response lost after remote acceptance")
+        send_mock, accepted_by_telegram = mock_send_crash_after_accept()
 
         with self.run_with_signal(), patch(
-            "gold_signal.service.send_telegram",
-            side_effect=accepted_then_response_lost,
+            "gold_signal.service.send_telegram", new=send_mock,
         ):
             with self.assertRaises(requests.Timeout):
                 run_once(self.config)
@@ -135,7 +141,7 @@ class DeliveryWalTests(unittest.TestCase):
         self.assertIn("response lost", records[key]["last_error"])
 
         with self.run_with_signal(), patch(
-            "gold_signal.service.send_telegram", return_value=987,
+            "gold_signal.service.send_telegram", new=mock_send_success(987),
         ) as sender:
             result = run_once(self.config)
 
@@ -164,7 +170,7 @@ class DeliveryWalTests(unittest.TestCase):
         })
 
         with self.run_with_signal(), patch(
-            "gold_signal.service.send_telegram", return_value=988,
+            "gold_signal.service.send_telegram", new=mock_send_success(988),
         ) as sender, self.assertLogs("gold_signal_bot", level="ERROR") as captured:
             result = run_once(self.config)
 
@@ -204,7 +210,7 @@ class DeliveryWalTests(unittest.TestCase):
         response = SimpleNamespace(status_code=400)
         error = requests.HTTPError("bad request", response=response)
         with self.run_with_signal(), patch(
-            "gold_signal.service.send_telegram", side_effect=error,
+            "gold_signal.service.send_telegram", new=mock_send_fail(error),
         ):
             with self.assertRaises(requests.HTTPError):
                 run_once(self.config)
@@ -225,7 +231,7 @@ class DeliveryWalTests(unittest.TestCase):
 
     def test_success_response_without_message_id_is_unknown_then_retried(self):
         with self.run_with_signal(), patch(
-            "gold_signal.service.send_telegram", return_value=None,
+            "gold_signal.service.send_telegram", new=mock_send_success_no_id(),
         ):
             with self.assertRaisesRegex(RuntimeError, "without a valid message_id"):
                 run_once(self.config)
@@ -238,7 +244,7 @@ class DeliveryWalTests(unittest.TestCase):
         self.assertIn("without a valid message_id", record["last_error"])
 
         with self.run_with_signal(), patch(
-            "gold_signal.service.send_telegram", return_value=989,
+            "gold_signal.service.send_telegram", new=mock_send_success(989),
         ) as sender:
             self.assertEqual(run_once(self.config), "sent")
         self.assertTrue(sender.call_args.args[1].startswith("<b>[RECOVERY RETRY]</b>"))
@@ -267,7 +273,7 @@ class DeliveryWalTests(unittest.TestCase):
         key = signal_key(self.signal)
         self.assertEqual(read_outbox(self.state_path)[key]["status"], "PENDING")
         with self.run_with_signal(), patch(
-            "gold_signal.service.send_telegram", return_value=990,
+            "gold_signal.service.send_telegram", new=mock_send_success(990),
         ) as sender:
             self.assertEqual(run_once(self.config), "sent")
         self.assertFalse(sender.call_args.args[1].startswith("<b>[RECOVERY RETRY]</b>"))
@@ -283,7 +289,7 @@ class DeliveryWalTests(unittest.TestCase):
         key = signal_key(self.signal)
         self.assertEqual(read_outbox(self.state_path)[key]["status"], "SENDING")
         with self.run_with_signal(), patch(
-            "gold_signal.service.send_telegram", return_value=991,
+            "gold_signal.service.send_telegram", new=mock_send_success(991),
         ) as sender:
             self.assertEqual(run_once(self.config), "sent")
         self.assertTrue(sender.call_args.args[1].startswith("<b>[RECOVERY RETRY]</b>"))
@@ -364,7 +370,7 @@ class DeliveryWalTests(unittest.TestCase):
     def test_cursor_write_failure_keeps_durable_sent_wal_and_never_resends(self):
         key = signal_key(self.signal)
         with self.run_with_signal(), patch(
-            "gold_signal.service.send_telegram", return_value=992,
+            "gold_signal.service.send_telegram", new=mock_send_success(992),
         ) as sender, patch(
             "gold_signal.service.write_state", side_effect=OSError("cursor disk failure"),
         ):
@@ -429,6 +435,102 @@ class DeliveryWalTests(unittest.TestCase):
                 second.terminate()
                 second.join(5)
         self.assertEqual(first.exitcode, 0)
+        self.assertEqual(second.exitcode, 0)
+
+
+    def test_legacy_wal_migrates_once_and_version_one_reads_are_stable(self):
+        key = signal_key(self.signal)
+        legacy = {
+            key: {
+                "signal_id": key,
+                "status": "PENDING",
+                "attempt_count": 0,
+                "message": "legacy pending message",
+                "telegram_message_id": None,
+            }
+        }
+        path = outbox_path(self.state_path)
+        original_bytes = json.dumps(legacy).encode("utf-8")
+        path.write_bytes(original_bytes)
+        migrated = read_outbox(self.state_path)
+        self.assertEqual(path.read_bytes(), original_bytes, "read-only migration must not rewrite the legacy file")
+        write_outbox(self.state_path, migrated)
+        version_one_bytes = path.read_bytes()
+        first_read = read_outbox(self.state_path)
+        second_read = read_outbox(self.state_path)
+        self.assertEqual(first_read, second_read)
+        self.assertEqual(path.read_bytes(), version_one_bytes)
+        self.assertEqual(json.loads(version_one_bytes)["wal_version"], 1)
+
+    def test_wal_and_cursor_both_write_fail_without_mutating_either_then_retry(self):
+        with self.run_with_signal(), patch(
+            "gold_signal.service.write_outbox", side_effect=OSError("WAL unavailable"),
+        ), patch(
+            "gold_signal.service.write_state", side_effect=OSError("cursor unavailable"),
+        ), patch(
+            "gold_signal.service.send_telegram",
+        ) as sender:
+            with self.assertRaisesRegex(OSError, "WAL unavailable"):
+                run_once(self.config)
+            sender.assert_not_called()
+        self.assertFalse(outbox_path(self.state_path).exists())
+        self.assertFalse(self.state_path.exists())
+
+        with self.run_with_signal(), patch(
+            "gold_signal.service.send_telegram", new=mock_send_success(993),
+        ) as sender:
+            self.assertEqual(run_once(self.config), "sent")
+        sender.assert_called_once()
+        self.assertEqual(read_state(self.state_path), self.candles[-1]["time"].isoformat())
+        self.assertEqual(read_outbox(self.state_path)[signal_key(self.signal)]["status"], "SENT")
+
+    def test_error_history_retains_only_five_latest_auditable_errors(self):
+        for index in range(6):
+            error = requests.Timeout(f"timeout-{index}")
+            with self.run_with_signal(), patch(
+                "gold_signal.service.send_telegram", new=mock_send_fail(error),
+            ):
+                with self.assertRaises(requests.Timeout):
+                    run_once(self.config)
+
+        record = read_outbox(self.state_path)[signal_key(self.signal)]
+        history = record["error_history"]
+        self.assertEqual(len(history), 5)
+        self.assertEqual([item["error"] for item in history], [f"timeout-{i}" for i in range(1, 6)])
+        self.assertTrue(all(item["signal_id"] == signal_key(self.signal) for item in history))
+        self.assertTrue(all(item["timestamp"] == self.signal["candle_time"].isoformat() for item in history))
+        self.assertEqual(record["last_error"], "timeout-5")
+
+    def test_operating_system_releases_lock_after_process_crashes_inside_critical_section(self):
+        context = multiprocessing.get_context("spawn")
+        crashed_ready = context.Event()
+        first = context.Process(
+            target=_multiprocess_crash_while_locked,
+            args=(str(self.state_path), crashed_ready),
+        )
+        first.start()
+        self.assertTrue(crashed_ready.wait(10), "crash worker never acquired the OS lock")
+        first.join(10)
+        self.assertFalse(first.is_alive(), "crash worker did not terminate")
+        self.assertEqual(first.exitcode, 23)
+
+        acquired = context.Event()
+        release = context.Event()
+        results = context.Queue()
+        second = context.Process(
+            target=_multiprocess_lock_worker,
+            args=(str(self.state_path), acquired, release, results),
+        )
+        second.start()
+        try:
+            self.assertTrue(acquired.wait(10), "second process could not acquire lock after first crashed")
+            self.assertEqual(results.get(timeout=3), "acquired")
+        finally:
+            release.set()
+            second.join(10)
+            if second.is_alive():
+                second.terminate()
+                second.join(5)
         self.assertEqual(second.exitcode, 0)
 
     def test_initial_startup_logs_number_of_intentionally_ignored_bars(self):
