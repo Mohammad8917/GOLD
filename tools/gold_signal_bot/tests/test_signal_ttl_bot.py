@@ -16,6 +16,13 @@ from gold_signal.state import read_outbox, read_state
 
 
 class TelegramSignalExpiryTests(unittest.TestCase):
+    def test_one_day_default_scales_to_timeframe(self) -> None:
+        from unittest.mock import patch
+        from gold_signal.config import default_signal_ttl_candles
+        self.assertEqual(default_signal_ttl_candles("1h"), 24)
+        self.assertEqual(default_signal_ttl_candles("15min"), 96)
+        self.assertEqual(default_signal_ttl_candles("4h"), 6)
+
     def make_config(self, folder: str) -> Config:
         return Config(
             "api-key", "bot-token", "chat-id", "1h", 60, 1.5, 1.0, 2.0,
