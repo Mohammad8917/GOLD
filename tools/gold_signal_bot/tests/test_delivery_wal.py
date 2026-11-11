@@ -294,7 +294,7 @@ class DeliveryWalTests(unittest.TestCase):
         write_outbox(self.state_path, original)
         with patch.object(state_module.os, "replace", side_effect=OSError("simulated interrupted replace")):
             with self.assertRaises(OSError):
-                write_outbox(self.state_path, {key: {"status": "SENT", "attempt_count": 2}})
+                write_outbox(self.state_path, {key: {"status": "SENT", "attempt_count": 2, "telegram_message_id": 123}})
         self.assertEqual(read_outbox(self.state_path), original)
 
     def test_sending_seen_outside_startup_recovery_fails_closed(self):
@@ -409,7 +409,7 @@ class DeliveryWalTests(unittest.TestCase):
         )
         second = context.Process(
             target=_multiprocess_lock_worker,
-            args=(str(self.state_path), context.Event(), context.Event(), results),
+            args=(str(self.state_path), ready, release, results),
         )
         first.start()
         try:
