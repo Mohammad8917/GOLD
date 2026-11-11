@@ -27,6 +27,24 @@ def format_signal(data: dict[str, Any], timeframe: str) -> str:
     )
 
 
+def format_expiry(
+    data: dict[str, Any], timeframe: str, expiry_at, close_price: float,
+    ttl_candles: int,
+) -> str:
+    """Format an explicit lifecycle-expiry notice; never implies an order was executed."""
+    stamp = expiry_at.strftime("%Y-%m-%d %H:%M UTC")
+    side = data.get("side", "نامشخص")
+    return (
+        "⏳ <b>GOLD / XAUUSD — SIGNAL EXPIRED</b>\\n"
+        f"<b>جهت:</b> {side}\\n"
+        f"<b>تایم‌فریم:</b> {timeframe}\\n"
+        f"<b>قیمت بسته‌شدن:</b> {close_price:.2f}\\n"
+        f"<b>زمان انقضا:</b> {stamp}\\n"
+        f"<b>اعتبار:</b> {ttl_candles} کندل بسته‌شده\\n\\n"
+        "این سیگنال منقضی شد و دیگر معتبر نیست. هیچ سفارشی اجرا نشده است."
+    )
+
+
 def send_telegram(
     config: Config,
     message: str,
