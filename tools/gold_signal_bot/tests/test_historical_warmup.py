@@ -60,10 +60,11 @@ class HistoricalWarmupExpansionTests(unittest.TestCase):
     def test_actual_test_window_coverage_is_still_required(self) -> None:
         start = date(2026, 4, 10)
         insufficient_test_window = bars_with_warmup(start, 205)[:-10]
+        end = start + timedelta(days=10)
         with patch("backtest_historical.fetch_history", return_value=insufficient_test_window):
             with self.assertRaisesRegex(RuntimeError, "ends too early"):
                 fetch_history_with_warmup(
-                    "unused-key", "1h", start, start, object(),
+                    "unused-key", "1h", start, end, object(),
                 )
 
 
