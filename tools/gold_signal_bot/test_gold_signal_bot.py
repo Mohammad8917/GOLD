@@ -641,7 +641,7 @@ class RunOnceTests(unittest.TestCase):
         return Config("api-key", "bot-token", "chat-id", "15min", 45, 1.5, 1.0, 2.0,
                       Path(folder) / "state.json", 5, 2, 0.01, 3.0, 1.5)
 
-    def make_candles(self, count=60):
+    def make_candles(self, count=201):
         start = datetime(2026, 11, 10, 0, 0, tzinfo=timezone.utc)
         return [{"time": start + timedelta(minutes=15*i), "open": 2600.0,
                  "high": 2602.0, "low": 2598.0, "close": 2601.0}
