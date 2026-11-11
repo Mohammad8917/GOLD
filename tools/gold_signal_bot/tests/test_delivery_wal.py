@@ -21,7 +21,7 @@ from gold_signal.state import process_lock, read_outbox, read_state, outbox_path
 from gold_signal import state as state_module
 from tests.helpers.telegram_mock import (
     mock_send_crash_after_accept, mock_send_fail, mock_send_success,
-    mock_send_success_no_id, mock_send_timeout,
+    mock_send_success_no_id, mock_send_timeout, SimulatedTelegramProcessCrash,
 )
 
 
@@ -279,12 +279,14 @@ class DeliveryWalTests(unittest.TestCase):
         self.assertFalse(sender.call_args.args[1].startswith("<b>[RECOVERY RETRY]</b>"))
 
     def test_crash_after_sending_before_telegram_call_recovers_as_unknown(self):
+        crash_mock, accepted = mock_send_crash_after_accept()
         with self.run_with_signal(), patch(
-            "gold_signal.service.send_telegram", side_effect=SimulatedProcessCrash("terminated"),
+            "gold_signal.service.send_telegram", new=crash_mock,
         ) as sender:
-            with self.assertRaises(SimulatedProcessCrash):
+            with self.assertRaises(SimulatedTelegramProcessCrash):
                 run_once(self.config)
             sender.assert_called_once()
+        self.assertEqual(accepted, ["accepted"])
 
         key = signal_key(self.signal)
         self.assertEqual(read_outbox(self.state_path)[key]["status"], "SENDING")
@@ -384,7 +386,7 @@ class DeliveryWalTests(unittest.TestCase):
         self.assertEqual(read_state(self.state_path), "")
 
         with self.run_with_signal(), patch(
-            "gold_signal.service.send_telegram",
+            "gold_signal.service.send_telegram", new=mock_send_success(),
         ) as sender:
             result = run_once(self.config)
         self.assertEqual(result, "processed_no_signal")
