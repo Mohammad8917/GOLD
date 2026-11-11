@@ -64,7 +64,7 @@ class TelegramSignalExpiryTests(unittest.TestCase):
                 message = sender.call_args.args[1]
                 self.assertIn("منقضی", message)
                 self.assertIn("2601.00", message)
-                self.assertIn(ttl_candle[203]["time"].strftime("%Y-%m-%d %H:%M"), message)
+                self.assertIn((ttl_candle[203]["time"] + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M"), message)
 
             records = read_outbox(config.state_file)
             signal_record = next(
