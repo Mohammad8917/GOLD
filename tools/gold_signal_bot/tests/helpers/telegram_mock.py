@@ -28,12 +28,16 @@ def mock_send_timeout() -> Mock:
     return Mock(side_effect=requests.Timeout("simulated Telegram timeout"))
 
 
+class SimulatedTelegramProcessCrash(BaseException):
+    """Abrupt process death after Telegram has accepted the message."""
+
+
 def mock_send_crash_after_accept() -> tuple[Mock, list[str]]:
-    """Simulate remote acceptance followed by loss of the response."""
+    """Simulate remote acceptance followed by abrupt process termination."""
     accepted: list[str] = []
 
     def accepted_then_crash(*_args, **_kwargs):
         accepted.append("accepted")
-        raise requests.Timeout("response lost after remote acceptance")
+        raise SimulatedTelegramProcessCrash("process terminated after remote acceptance")
 
     return Mock(side_effect=accepted_then_crash), accepted
