@@ -1,10 +1,12 @@
 """TDD regression tests for configurable signal lifetime in historical simulation."""
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -35,24 +37,26 @@ def buy_signal() -> dict:
 class SignalTtlBacktestTests(unittest.TestCase):
     def test_default_ttl_expires_at_the_24th_following_closed_candle_close(self) -> None:
         bars = [bar(index) for index in range(26)]
-        trades, skipped = simulate(bars, [buy_signal()], cost_per_side=0.0)
+        with patch.dict(os.environ, {"GOLD_TIMEFRAME": "1h"}, clear=False):
+            trades, skipped = simulate(bars, [buy_signal()], cost_per_side=0.0)
 
         self.assertEqual(skipped, 0)
         self.assertEqual(len(trades), 1)
         trade = trades[0]
         self.assertEqual(trade["exit_reason"], "EXPIRED")
-        self.assertEqual(trade["exit_time"], bars[24]["time"].isoformat())
+        self.assertEqual(trade["exit_time"], (bars[24]["time"] + timedelta(hours=1)).isoformat())
         self.assertEqual(trade["bars_held"], 24)
         self.assertAlmostEqual(trade["net_r"], 0.4, places=6)
 
     def test_custom_ttl_is_respected(self) -> None:
         bars = [bar(index, close=102.0) for index in range(8)]
-        trades, _ = simulate(
-            bars, [buy_signal()], cost_per_side=0.0, signal_ttl_candles=5
-        )
+        with patch.dict(os.environ, {"GOLD_TIMEFRAME": "1h"}, clear=False):
+            trades, _ = simulate(
+                bars, [buy_signal()], cost_per_side=0.0, signal_ttl_candles=5
+            )
         self.assertEqual(len(trades), 1)
         self.assertEqual(trades[0]["exit_reason"], "EXPIRED")
-        self.assertEqual(trades[0]["exit_time"], bars[5]["time"].isoformat())
+        self.assertEqual(trades[0]["exit_time"], (bars[5]["time"] + timedelta(hours=1)).isoformat())
         self.assertEqual(trades[0]["bars_held"], 5)
 
     def test_stop_or_target_before_expiry_takes_precedence(self) -> None:
