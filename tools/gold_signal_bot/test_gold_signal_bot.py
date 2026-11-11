@@ -40,6 +40,11 @@ class IndicatorTests(unittest.TestCase):
         self.assertAlmostEqual(result[3], 75.0)
         self.assertTrue(all(0.0 <= value <= 100.0 for value in result if value is not None))
 
+    def test_rsi_flat_market_is_neutral(self):
+        result = rsi([5.0] * 20, 14)
+        self.assertAlmostEqual(result[14], 50.0)
+        self.assertAlmostEqual(result[-1], 50.0)
+
     def test_atr_matches_known_reference_value(self):
         bars = [
             {"open": 10.0, "high": 12.0, "low": 9.0, "close": 10.0},
@@ -591,17 +596,19 @@ class FormattingTests(unittest.TestCase):
 
 
 class AdditionalStateTests(unittest.TestCase):
-    def test_corrupt_state_json_fails_safe_to_empty(self):
+    def test_corrupt_state_json_fails_closed(self):
         with TemporaryDirectory() as folder:
             path = Path(folder) / "state.json"
             path.write_text("{not-json", encoding="utf-8")
-            self.assertEqual(read_state(path), "")
+            with self.assertRaisesRegex(RuntimeError, "refusing to reset"):
+                read_state(path)
 
-    def test_non_object_state_json_fails_safe_to_empty(self):
+    def test_non_object_state_json_fails_closed(self):
         with TemporaryDirectory() as folder:
             path = Path(folder) / "state.json"
             path.write_text("[]", encoding="utf-8")
-            self.assertEqual(read_state(path), "")
+            with self.assertRaisesRegex(RuntimeError, "refusing to reset"):
+                read_state(path)
 
     def test_write_state_creates_parent_and_cleans_temp_file(self):
         with TemporaryDirectory() as folder:
@@ -617,53 +624,64 @@ class RunOnceTests(unittest.TestCase):
         return Config("api-key", "bot-token", "chat-id", "15min", 45, 1.5, 1.0, 2.0,
                       Path(folder) / "state.json", 5, 2, 0.01, 3.0, 1.5)
 
+    def make_candles(self, count=60):
+        start = datetime(2026, 11, 10, 0, 0, tzinfo=timezone.utc)
+        return [{"time": start + timedelta(minutes=15*i), "open": 2600.0,
+                 "high": 2602.0, "low": 2598.0, "close": 2601.0}
+                for i in range(count)]
+
     def make_signal(self, stamp):
         return {"symbol": "XAU/USD", "side": "BUY", "entry": 2600.0,
                 "stop_loss": 2590.0, "take_profit_1": 2610.0,
                 "take_profit_2": 2620.0, "atr": 6.0, "rsi": 60.0,
                 "ema_fast": 2598.0, "ema_slow": 2590.0, "candle_time": stamp}
 
-    def test_no_signal_does_not_send_telegram(self):
+    def test_no_signal_advances_processed_cursor_without_sending(self):
         with TemporaryDirectory() as folder:
             config = self.make_config(folder)
-            with patch("gold_signal.service.fetch_closed_candles", return_value=[]), \
+            candles = self.make_candles()
+            with patch("gold_signal.service.fetch_closed_candles", return_value=candles), \
                  patch("gold_signal.service.detect_signal", return_value=None), \
                  patch("gold_signal.service.send_telegram") as sender:
                 result = run_once(config)
-        self.assertEqual(result, "no_signal")
-        sender.assert_not_called()
+            self.assertEqual(result, "processed_no_signal")
+            sender.assert_not_called()
+            self.assertEqual(read_state(config.state_file), candles[-1]["time"].isoformat())
 
-    def test_duplicate_signal_is_not_sent_twice(self):
+    def test_already_processed_latest_candle_is_not_replayed(self):
         with TemporaryDirectory() as folder:
             config = self.make_config(folder)
-            stamp = datetime(2026, 11, 10, 10, 0, tzinfo=timezone.utc)
-            write_state(config.state_file, stamp)
-            with patch("gold_signal.service.fetch_closed_candles", return_value=[]), \
-                 patch("gold_signal.service.detect_signal", return_value=self.make_signal(stamp)), \
+            candles = self.make_candles()
+            write_state(config.state_file, candles[-1]["time"])
+            with patch("gold_signal.service.fetch_closed_candles", return_value=candles), \
+                 patch("gold_signal.service.detect_signal") as detect, \
                  patch("gold_signal.service.send_telegram") as sender:
                 result = run_once(config)
-        self.assertEqual(result, "duplicate")
-        sender.assert_not_called()
+            self.assertEqual(result, "no_signal")
+            detect.assert_not_called()
+            sender.assert_not_called()
 
-    def test_successful_send_persists_signal_candle(self):
+    def test_successful_send_persists_processed_cursor(self):
         with TemporaryDirectory() as folder:
             config = self.make_config(folder)
-            stamp = datetime(2026, 11, 10, 10, 15, tzinfo=timezone.utc)
-            with patch("gold_signal.service.fetch_closed_candles", return_value=[]), \
-                 patch("gold_signal.service.detect_signal", return_value=self.make_signal(stamp)), \
+            candles = self.make_candles()
+            data = self.make_signal(candles[-1]["time"])
+            with patch("gold_signal.service.fetch_closed_candles", return_value=candles), \
+                 patch("gold_signal.service.detect_signal", return_value=data), \
                  patch("gold_signal.service.format_signal", return_value="test message"), \
                  patch("gold_signal.service.send_telegram") as sender:
                 result = run_once(config)
             self.assertEqual(result, "sent")
             sender.assert_called_once()
-            self.assertEqual(read_state(config.state_file), stamp.isoformat())
+            self.assertEqual(read_state(config.state_file), candles[-1]["time"].isoformat())
 
-    def test_failed_telegram_send_does_not_mark_signal_as_sent(self):
+    def test_failed_telegram_send_does_not_advance_cursor(self):
         with TemporaryDirectory() as folder:
             config = self.make_config(folder)
-            stamp = datetime(2026, 11, 10, 10, 30, tzinfo=timezone.utc)
-            with patch("gold_signal.service.fetch_closed_candles", return_value=[]), \
-                 patch("gold_signal.service.detect_signal", return_value=self.make_signal(stamp)), \
+            candles = self.make_candles()
+            data = self.make_signal(candles[-1]["time"])
+            with patch("gold_signal.service.fetch_closed_candles", return_value=candles), \
+                 patch("gold_signal.service.detect_signal", return_value=data), \
                  patch("gold_signal.service.format_signal", return_value="test message"), \
                  patch("gold_signal.service.send_telegram", side_effect=requests.Timeout("offline")):
                 with self.assertRaises(requests.Timeout):
