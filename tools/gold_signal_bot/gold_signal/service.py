@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-from .config import Config, TIMEFRAMES
+from .config import Config, TIMEFRAMES, default_signal_ttl_candles
 from .market_data import fetch_closed_candles, parse_bar_time
 from .strategy import detect_signals
 from .strategy_version import STRATEGY_VERSION
@@ -64,7 +64,11 @@ def _recover_startup_sending(outbox: dict[str, dict], state_path) -> None:
                 "decision": "startup recovery; retry with [RECOVERY RETRY]",
             })
             changed = True
-            LOG.error("Startup recovery: signal %s was left SENDING; retrying visibly", key)
+            LOG.error(
+                "Startup recovery: signal %s was left SENDING; status is UNKNOWN; "
+                "decision: retry with [RECOVERY RETRY]",
+                key,
+            )
 
         if record.get("expiry_status") == "SENDING":
             record["expiry_status"] = "UNKNOWN"
@@ -105,6 +109,9 @@ def _process_due_expirations(
     index_by_time = {bar["time"]: index for index, bar in enumerate(candles)}
     sent_count = 0
     interval = TIMEFRAMES[config.timeframe][1]
+    ttl_candles = getattr(config, "signal_ttl_candles", None)
+    if ttl_candles is None:
+        ttl_candles = default_signal_ttl_candles(config.timeframe)
 
     for key, record in list(outbox.items()):
         if record.get("status") != "SENT" or record.get("lifecycle_status") == "EXPIRED":
@@ -122,7 +129,7 @@ def _process_due_expirations(
                 )
             continue
 
-        expiry_index = signal_index + config.signal_ttl_candles
+        expiry_index = signal_index + ttl_candles
         if expiry_index > current_index or expiry_index >= len(candles):
             continue
         expiry_bar = candles[expiry_index]
@@ -143,7 +150,7 @@ def _process_due_expirations(
             record["expiry_status"] = "PENDING"
             record["expiry_message"] = format_expiry(
                 record, config.timeframe, expiry_at, float(expiry_bar["close"]),
-                config.signal_ttl_candles,
+                ttl_candles,
             )
             record["expiry_candle_time"] = expiry_bar["time"].isoformat()
             record["expiry_at"] = expiry_at.isoformat()
@@ -326,10 +333,10 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
                         "message": message,
                         "telegram_message_id": None,
                         "side": data["side"],
-                        "entry": float(data["entry"]),
-                        "stop_loss": float(data["stop_loss"]),
-                        "take_profit_1": float(data["take_profit_1"]),
-                        "take_profit_2": float(data["take_profit_2"]),
+                        "entry": float(data["entry"]) if data.get("entry") is not None else None,
+                        "stop_loss": float(data["stop_loss"]) if data.get("stop_loss") is not None else None,
+                        "take_profit_1": float(data["take_profit_1"]) if data.get("take_profit_1") is not None else None,
+                        "take_profit_2": float(data["take_profit_2"]) if data.get("take_profit_2") is not None else None,
                         "lifecycle_status": "ACTIVE",
                         "last_error": None,
                         "error_history": [],
