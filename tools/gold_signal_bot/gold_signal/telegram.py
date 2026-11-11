@@ -35,12 +35,12 @@ def format_expiry(
     stamp = expiry_at.strftime("%Y-%m-%d %H:%M UTC")
     side = data.get("side", "نامشخص")
     return (
-        "⏳ <b>GOLD / XAUUSD — SIGNAL EXPIRED</b>\\n"
-        f"<b>جهت:</b> {side}\\n"
-        f"<b>تایم‌فریم:</b> {timeframe}\\n"
-        f"<b>قیمت بسته‌شدن:</b> {close_price:.2f}\\n"
-        f"<b>زمان انقضا:</b> {stamp}\\n"
-        f"<b>اعتبار:</b> {ttl_candles} کندل بسته‌شده\\n\\n"
+        "⏳ <b>GOLD / XAUUSD — SIGNAL EXPIRED</b>\n"
+        f"<b>جهت:</b> {side}\n"
+        f"<b>تایم‌فریم:</b> {timeframe}\n"
+        f"<b>قیمت بسته‌شدن:</b> {close_price:.2f}\n"
+        f"<b>زمان انقضا:</b> {stamp}\n"
+        f"<b>اعتبار:</b> {ttl_candles} کندل بسته‌شده\n\n"
         "این سیگنال منقضی شد و دیگر معتبر نیست. هیچ سفارشی اجرا نشده است."
     )
 
