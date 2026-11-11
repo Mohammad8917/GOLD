@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from backtest_historical import (  # noqa: E402
     select_test_window_signals, simulate, validate_history_continuity,
+    validate_test_window_coverage,
 )
 
 
@@ -70,6 +71,34 @@ class HistoricalBacktestExecutionTests(unittest.TestCase):
         self.assertEqual(len(trades), 1)
         self.assertEqual(trades[0]["exit_reason"], "SL")
         self.assertAlmostEqual(trades[0]["net_r"], -1.0, places=6)
+
+
+class HistoricalCoverageTests(unittest.TestCase):
+    def test_rejects_provider_history_starting_too_late(self) -> None:
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc).date()
+        end = datetime(2026, 1, 10, tzinfo=timezone.utc).date()
+        bars = [candle(0)]
+        bars[0]["time"] = datetime(2026, 1, 5, tzinfo=timezone.utc)
+        with self.assertRaisesRegex(RuntimeError, "starts too late"):
+            validate_test_window_coverage(bars, start, end, "15min")
+
+    def test_rejects_provider_history_ending_too_early(self) -> None:
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc).date()
+        end = datetime(2026, 1, 10, tzinfo=timezone.utc).date()
+        bars = [candle(0)]
+        bars[0]["time"] = datetime(2026, 1, 2, tzinfo=timezone.utc)
+        with self.assertRaisesRegex(RuntimeError, "ends too early"):
+            validate_test_window_coverage(bars, start, end, "15min")
+
+    def test_accepts_full_requested_window(self) -> None:
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc).date()
+        end = datetime(2026, 1, 2, tzinfo=timezone.utc).date()
+        bars = [
+            {**candle(0), "time": datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)},
+            {**candle(1), "time": datetime(2026, 1, 2, 23, 45, tzinfo=timezone.utc)},
+        ]
+        validate_test_window_coverage(bars, start, end, "15min")
+
 
 
 class HistoricalWarmupTests(unittest.TestCase):
