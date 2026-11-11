@@ -1,6 +1,7 @@
 """Offline integration tests for Telegram signal-expiry notifications."""
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -10,6 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from backtest_historical import simulate
 from gold_signal.config import Config
 from gold_signal.service import run_once
 from gold_signal.state import read_outbox, read_state
@@ -72,6 +74,25 @@ class TelegramSignalExpiryTests(unittest.TestCase):
                 self.assertIn("منقضی", message)
                 self.assertIn("2601.00", message)
                 self.assertIn((ttl_candle[203]["time"] + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M"), message)
+
+            # Same candle sequence and TTL must produce the exact same expiry
+            # close timestamp in the historical simulator and Telegram notice.
+            backtest_signal = {
+                "signal_index": 200, "signal_time": first[-1]["time"],
+                "side": "BUY", "entry": 2600.0, "stop": 2590.0,
+                "tp1": 2610.0, "tp2": 2620.0, "risk": 10.0,
+            }
+            with patch.dict(os.environ, {"GOLD_TIMEFRAME": "1h"}, clear=False):
+                trades, _ = simulate(
+                    ttl_candle, [backtest_signal], cost_per_side=0.0,
+                    signal_ttl_candles=config.signal_ttl_candles,
+                )
+            self.assertEqual(len(trades), 1)
+            self.assertEqual(trades[0]["exit_reason"], "EXPIRED")
+            backtest_expiry_display = datetime.fromisoformat(
+                trades[0]["exit_time"]
+            ).strftime("%Y-%m-%d %H:%M")
+            self.assertIn(backtest_expiry_display, message)
 
             records = read_outbox(config.state_file)
             signal_record = next(
