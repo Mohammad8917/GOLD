@@ -122,7 +122,9 @@ class DeliveryWalTests(unittest.TestCase):
         self.assertEqual(result, "sent")
         self.assertTrue(sender.call_args.args[1].startswith("<b>[RECOVERY RETRY]</b>"))
         self.assertEqual(read_state(self.state_path), self.candles[-1]["time"].isoformat())
-        self.assertEqual(read_outbox(self.state_path), {})
+        sent_record = read_outbox(self.state_path)[key]
+        self.assertEqual(sent_record["status"], "SENT")
+        self.assertEqual(sent_record["telegram_message_id"], 987)
 
     def test_stale_sending_record_is_classified_unknown_and_audited(self):
         key = signal_key(self.signal)
@@ -176,7 +178,21 @@ class DeliveryWalTests(unittest.TestCase):
         self.assertEqual(result, "processed_no_signal")
         sender.assert_not_called()
         self.assertEqual(read_state(self.state_path), self.candles[-1]["time"].isoformat())
-        self.assertEqual(read_outbox(self.state_path), {})
+        self.assertEqual(read_outbox(self.state_path)[key]["status"], "SENT")
+
+    def test_definitive_telegram_rejection_is_not_misclassified_as_unknown(self):
+        response = SimpleNamespace(status_code=400)
+        error = requests.HTTPError("bad request", response=response)
+        with self.run_with_signal(), patch(
+            "gold_signal.service.send_telegram", side_effect=error,
+        ):
+            with self.assertRaises(requests.HTTPError):
+                run_once(self.config)
+
+        self.assertEqual(read_state(self.state_path), "")
+        record = read_outbox(self.state_path)[signal_key(self.signal)]
+        self.assertEqual(record["status"], "FAILED")
+        self.assertIn("definitive rejection", record["recovery_history"][-1]["decision"])
 
     def test_corrupt_wal_fails_closed_instead_of_becoming_empty(self):
         outbox_path(self.state_path).write_text("{broken", encoding="utf-8")
