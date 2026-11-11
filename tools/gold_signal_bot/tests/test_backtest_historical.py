@@ -94,6 +94,16 @@ class HistoricalDataContinuityTests(unittest.TestCase):
         ]
         validate_history_continuity(bars, "1day")
 
+    def test_daily_timeframe_rejects_unexplained_weekday_gap(self) -> None:
+        monday = datetime(2026, 1, 5, tzinfo=timezone.utc)
+        thursday = datetime(2026, 1, 8, tzinfo=timezone.utc)
+        bars = [
+            {"time": monday, "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0},
+            {"time": thursday, "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0},
+        ]
+        with self.assertRaisesRegex(RuntimeError, "Unexpected historical data gap"):
+            validate_history_continuity(bars, "1day")
+
 
 if __name__ == "__main__":
     unittest.main()
