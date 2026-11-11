@@ -6,10 +6,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from gold_signal.service import run_once
+from gold_signal.service import run_once, INDICATOR_WARMUP_BARS
 from gold_signal.state import read_state, write_state
 
-def bars(count: int = 62) -> list[dict]:
+def bars(count: int = 202) -> list[dict]:
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
     return [{"time": start + timedelta(minutes=15*i), "open": 100.0,
              "high": 101.0, "low": 99.0, "close": 100.0} for i in range(count)]
@@ -19,7 +19,7 @@ def config(path: Path) -> SimpleNamespace:
                            atr_multiplier=1.5, tp1_r=1.0, tp2_r=2.0)
 
 class CatchupTests(unittest.TestCase):
-    def test_first_run_only_processes_latest_bar(self):
+    def test_first_run_only_processes_latest_bar_with_full_warmup(self):
         candles = bars()
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory) / "state.json"
@@ -30,14 +30,38 @@ class CatchupTests(unittest.TestCase):
             detect.assert_called_once()
             self.assertEqual(read_state(state), candles[-1]["time"].isoformat())
 
+    def test_first_run_fails_closed_when_warmup_is_short(self):
+        candles = bars(INDICATOR_WARMUP_BARS)
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "state.json"
+            with patch("gold_signal.service.fetch_closed_candles", return_value=candles), \
+                 patch("gold_signal.service.detect_signals") as detect:
+                with self.assertRaisesRegex(RuntimeError, "Insufficient indicator warm-up history"):
+                    run_once(config(state))
+            detect.assert_not_called()
+            self.assertEqual(read_state(state), "")
+
+    def test_catchup_fails_closed_when_cursor_leaves_fewer_than_200_prior_bars(self):
+        candles = bars()
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "state.json"
+            # The next candle would be index 199, with only 199 prior candles.
+            write_state(state, candles[198]["time"])
+            with patch("gold_signal.service.fetch_closed_candles", return_value=candles), \
+                 patch("gold_signal.service.detect_signals") as detect:
+                with self.assertRaisesRegex(RuntimeError, "need 200 prior candles, have 199"):
+                    run_once(config(state))
+            detect.assert_not_called()
+            self.assertEqual(read_state(state), candles[198]["time"].isoformat())
+
     def test_outage_catchup_processes_every_new_bar_in_order(self):
         candles = bars()
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory) / "state.json"
-            write_state(state, candles[59]["time"])
+            write_state(state, candles[199]["time"])
             signals = [
-                {"side": "BUY", "candle_time": candles[60]["time"]},
-                {"side": "SELL", "candle_time": candles[61]["time"]},
+                {"side": "BUY", "candle_time": candles[200]["time"]},
+                {"side": "SELL", "candle_time": candles[201]["time"]},
             ]
             with patch("gold_signal.service.fetch_closed_candles", return_value=candles), \
                  patch("gold_signal.service.detect_signals", return_value=signals), \
