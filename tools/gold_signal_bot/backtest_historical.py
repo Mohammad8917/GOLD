@@ -54,6 +54,31 @@ def validate_history_continuity(bars: list[dict[str, Any]], timeframe: str) -> N
             )
 
 
+
+def validate_test_window_coverage(
+    bars: list[dict[str, Any]], start: date, end: date, timeframe: str
+) -> None:
+    """Reject provider responses that silently cover only part of the requested dates."""
+    start_utc = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
+    end_exclusive = datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+    interval = TIMEFRAMES[timeframe][1]
+    first_test = next((bar for bar in bars if bar["time"] >= start_utc), None)
+    if first_test is None:
+        raise RuntimeError("No candles were returned inside the requested backtest window.")
+    tolerance_days = 7 if timeframe == "1day" else 3
+    if first_test["time"] - start_utc > timedelta(days=tolerance_days):
+        raise RuntimeError(
+            f"Historical data starts too late: first test candle is {first_test['time'].isoformat()}, "
+            f"more than {tolerance_days} days after the requested start."
+        )
+    last_closed_end = bars[-1]["time"] + timedelta(seconds=interval)
+    if end_exclusive - last_closed_end > timedelta(days=tolerance_days):
+        raise RuntimeError(
+            f"Historical data ends too early: last candle closes at {last_closed_end.isoformat()}, "
+            f"more than {tolerance_days} days before the requested end."
+        )
+
+
 def fetch_history(api_key: str, timeframe: str, start: date, end: date,
                   session: requests.Session) -> list[dict[str, Any]]:
     """Download bounded date chunks so no request exceeds Twelve Data's 5k cap."""
@@ -102,6 +127,7 @@ def fetch_history(api_key: str, timeframe: str, start: date, end: date,
     if len(result) < 100:
         raise RuntimeError(f"Only {len(result)} closed candles downloaded; at least 100 are required.")
     validate_history_continuity(result, timeframe)
+    validate_test_window_coverage(result, start, end, timeframe)
     return result
 
 
