@@ -47,7 +47,7 @@ def fetch_history(api_key: str, timeframe: str, start: date, end: date,
         chunk_end = min(final, cursor + timedelta(days=chunk_days))
         params = {
             "symbol": "XAU/USD", "interval": timeframe, "timezone": "UTC",
-            "format": "ISO", "order": "ASC",
+            "format": "ISO", "order": "asc",
             "start_date": cursor.strftime("%Y-%m-%dT%H:%M:%S"),
             "end_date": chunk_end.strftime("%Y-%m-%dT%H:%M:%S"),
             "apikey": api_key,
@@ -68,7 +68,7 @@ def fetch_history(api_key: str, timeframe: str, start: date, end: date,
             o, h, low, close = (bar[k] for k in ("open", "high", "low", "close"))
             if not all(math.isfinite(v) for v in (o, h, low, close)) or low <= 0 or h < max(o, low, close) or low > min(o, close):
                 raise RuntimeError(f"Invalid OHLC candle at {stamp.isoformat()}")
-            if stamp + timedelta(seconds=seconds) <= datetime.now(timezone.utc):
+            if cursor <= stamp < final and stamp + timedelta(seconds=seconds) <= datetime.now(timezone.utc):
                 candles[stamp] = bar
         cursor = chunk_end
         time.sleep(0.15)  # modest pacing across historical requests
