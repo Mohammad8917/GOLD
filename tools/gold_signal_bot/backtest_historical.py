@@ -258,18 +258,21 @@ def main() -> int:
     try:
         warmup_start = start - timedelta(seconds=WARMUP_BARS * TIMEFRAMES[args.timeframe][1])
         bars = fetch_history(key, args.timeframe, warmup_start, end, requests.Session())
+        start_utc = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
+        warmup_count = sum(bar["time"] < start_utc for bar in bars)
+        if warmup_count < WARMUP_BARS:
+            raise RuntimeError(
+                f"Only {warmup_count} of {WARMUP_BARS} required warm-up candles are available before {start.isoformat()}; "
+                "choose a later test start or a provider plan with deeper history."
+            )
         all_signals = generate_signals(bars, args.atr_multiplier, args.tp1_r, args.tp2_r)
         signals = select_test_window_signals(all_signals, start)
         trades, skipped = simulate(bars, signals, args.cost_per_side)
         report = summarize(trades, signals, skipped, bars, start, end)
         report["warmup_bars_requested"] = WARMUP_BARS
-        report["warmup_candles_downloaded"] = sum(
-            bar["time"] < datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
-            for bar in bars
-        )
+        report["warmup_candles_downloaded"] = warmup_count
         report["first_test_candle"] = next(
-            (bar["time"].isoformat() for bar in bars
-             if bar["time"] >= datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)),
+            (bar["time"].isoformat() for bar in bars if bar["time"] >= start_utc),
             None,
         )
         report["estimated_cost_per_side_price_units"] = args.cost_per_side
