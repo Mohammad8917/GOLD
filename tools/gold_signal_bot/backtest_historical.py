@@ -35,16 +35,18 @@ def parse_time(value: str) -> datetime:
 
 def validate_history_continuity(bars: list[dict[str, Any]], timeframe: str) -> None:
     """Fail closed on unexplained intraday data gaps before simulating trades."""
-    if timeframe == "1day":
-        # Calendar-day bars naturally skip weekends; do not classify those as missing.
-        return
     seconds = TIMEFRAMES[timeframe][1]
     for left, right in zip(bars, bars[1:]):
         gap_seconds = (right["time"] - left["time"]).total_seconds()
         if gap_seconds <= seconds * 1.5:
             continue
-        left_end = left["time"] + timedelta(seconds=seconds)
-        if not _is_expected_gold_pause(left_end, right["time"]):
+        if timeframe == "1day":
+            # Permit only the ordinary Friday-to-Monday calendar gap.
+            expected_pause = left["time"].weekday() == 4 and right["time"].weekday() == 0
+        else:
+            left_end = left["time"] + timedelta(seconds=seconds)
+            expected_pause = _is_expected_gold_pause(left_end, right["time"])
+        if not expected_pause:
             raise RuntimeError(
                 f"Unexpected historical data gap of {int(gap_seconds)} seconds "
                 f"after {left['time'].isoformat()}; refusing to backtest across missing candles."
