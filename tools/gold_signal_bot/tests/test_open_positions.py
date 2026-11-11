@@ -1,10 +1,12 @@
 """Regression tests for explicit open-position reporting in the backtest."""
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -31,10 +33,11 @@ class OpenPositionReportingTests(unittest.TestCase):
     def test_unfinished_position_is_reported_separately_from_completed_trades(self) -> None:
         bars = [candle(i) for i in range(6)]
         open_positions = []
-        trades, skipped = simulate(
-            bars, [signal()], 0.0, signal_ttl_candles=24,
-            open_positions=open_positions,
-        )
+        with patch.dict(os.environ, {"GOLD_TIMEFRAME": "1h"}, clear=False):
+            trades, skipped = simulate(
+                bars, [signal()], 0.0, signal_ttl_candles=24,
+                open_positions=open_positions,
+            )
         self.assertEqual(trades, [])
         self.assertEqual(skipped, 0)
         self.assertEqual(len(open_positions), 1)
@@ -64,10 +67,11 @@ class OpenPositionReportingTests(unittest.TestCase):
         bars = [candle(i) for i in range(6)]
         bars[1] = candle(1, close=105.0, high=111.0, low=99.0)
         open_positions = []
-        trades, _ = simulate(
-            bars, [signal()], 0.0, signal_ttl_candles=24,
-            open_positions=open_positions,
-        )
+        with patch.dict(os.environ, {"GOLD_TIMEFRAME": "1h"}, clear=False):
+            trades, _ = simulate(
+                bars, [signal()], 0.0, signal_ttl_candles=24,
+                open_positions=open_positions,
+            )
         self.assertEqual(trades, [])
         self.assertEqual(len(open_positions), 1)
         position = open_positions[0]
