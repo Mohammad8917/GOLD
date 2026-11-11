@@ -47,3 +47,24 @@ The script downloads date-bounded chunks plus 200 pre-test warm-up candles for i
 - This is an in-sample historical simulation, not proof of future profitability. A robust evaluation should reserve a later out-of-sample period and run a live paper forward-test.
 
 The report includes raw candle count, data gaps, signal count, completed trades, overlap-skipped signals, win rate, net R, profit factor, average R, drawdown in R, exit counts, a chronological 70/30 fixed-rule development/holdout comparison, and a moving-block-bootstrap Monte Carlo sensitivity summary. Monte Carlo output is withheld below 30 completed trades and is not a forecast or proof of edge. The 30% holdout is only independent if you do not use it to tune strategy rules; this is not walk-forward optimization. Development and holdout segments are simulated independently, and positions still open at a segment boundary are excluded from completed-trade metrics. An unexplained intraday gap stops the run rather than silently allowing a position to cross missing price action. Review expected session gaps and compare the CSV against the chart before trusting the metrics.
+
+
+## Export a real Twelve Data parity fixture
+
+The synthetic CI fixture keeps tests deterministic and offline. To add a real-feed check, export a sanitized candle sample locally on Windows 11. This uses the existing project-root `.env`; **do not paste or commit the API key**.
+
+From the repository root:
+
+```powershell
+..venv-gold\Scripts\Activate.ps1
+python tools\gold_signal_bot\export_parity_fixture.py --start 2026-10-01 --end 2026-11-10 --timeframe 1h --min-candles 200 --out reports\twelvedata_xauusd_parity.json
+```
+
+The exporter:
+- Downloads completed XAU/USD OHLC candles from Twelve Data using `GOLD_TWELVE_DATA_API_KEY`.
+- Reuses the backtest's timestamp, OHLC, gap, and date-coverage validation.
+- Requires at least 50 candles (200 by default, for a stronger indicator warm-up).
+- Compares live `detect_signals()` with the historical adapter on the same real-feed bars; it stops without writing the fixture if any timestamp, direction, entry, SL, TP1, or TP2 mismatch appears.
+- Writes only candle timestamps/OHLC and parity metadata. It never serializes the API key, Telegram bot token, chat ID, or request URL.
+
+The resulting JSON is local and is not automatically committed or uploaded. Review it before sharing; it contains market data, not credentials. If parity fails, preserve the JSON locally if it was already created elsewhere, capture the error and stop for review—do not change strategy logic to force a pass. A successful run validates feed compatibility and path consistency for that sample only; it does not prove profitability or live execution quality.
