@@ -155,9 +155,29 @@ def fetch_history_with_warmup(
     start_utc = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
     last_count = 0
 
+    last_fetch_error: str | None = None
     for attempt in range(1, max_attempts + 1):
         request_start = start - timedelta(days=margin_days)
-        bars = fetch_history(api_key, timeframe, request_start, end, session)
+        try:
+            bars = fetch_history(api_key, timeframe, request_start, end, session)
+        except RuntimeError as exc:
+            message = str(exc)
+            retriable_history_shortfall = (
+                "closed candles downloaded" in message
+                or "Historical data starts too late" in message
+                or "No historical values returned" in message
+                or "No candles were returned inside" in message
+            )
+            if not retriable_history_shortfall:
+                raise
+            last_fetch_error = message
+            if attempt < max_attempts:
+                margin_days *= 2
+                continue
+            raise RuntimeError(
+                f"Historical warm-up fetch failed after {max_attempts} attempts: {message}"
+            ) from exc
+
         # Coverage of the measured test window is checked separately from warm-up.
         validate_test_window_coverage(bars, start, end, timeframe)
         last_count = sum(bar["time"] < start_utc for bar in bars)
@@ -166,10 +186,11 @@ def fetch_history_with_warmup(
         if attempt < max_attempts:
             margin_days *= 2
 
+    detail = f" Last provider error: {last_fetch_error}." if last_fetch_error else ""
     raise RuntimeError(
         f"Historical warm-up unavailable after {max_attempts} attempts: "
         f"only {last_count} of {required_bars} required completed candles "
-        f"were found before {start.isoformat()}. Choose a later start date "
+        f"were found before {start.isoformat()}.{detail} Choose a later start date "
         "or a Twelve Data plan with deeper history."
     )
 
@@ -404,7 +425,7 @@ def summarize(trades: list[dict[str, Any]], signals: list[dict[str, Any]],
         "candles": len(bars), "data_time_gaps_over_1_5_intervals": gaps,
         "signals_generated": len(signals), "completed_trades": len(trades),
         "signals_skipped_while_position_open": skipped,
-        "unfinished_positions_excluded": len(open_positions),
+        "unfinished_positions_excluded": len(signals) - len(trades) - skipped,
         "open_positions_count": len(open_positions),
         "open_positions": open_positions,
         "open_position_warning": (
@@ -420,7 +441,7 @@ def summarize(trades: list[dict[str, Any]], signals: list[dict[str, Any]],
         "monte_carlo_block_bootstrap": monte_carlo_risk_metrics(returns),
         "exit_sl": sum(t["exit_reason"] == "SL" for t in trades),
         "exit_tp2": sum(t["exit_reason"] == "TP2" for t in trades),
-        "methodology": "Entry at signal candle close; 50% exits at TP1 and 50% at TP2; conservative stop-first if SL and target touch in same OHLC bar; one open position; unfinished trades excluded.",
+        "methodology": "Entry at signal candle close; 50% exits at TP1 and 50% at TP2; conservative stop-first if SL and target touch in same OHLC bar; one open position; TTL closes unresolved positions at the TTLth candle close; unfinished positions are reported separately and excluded from completed-trade metrics.",
     }
 
 
@@ -453,7 +474,7 @@ def evaluate_chronological_holdout(
         "split_time": test_bars[split_index]["time"].isoformat(),
         "warning": (
             "The holdout is only independent if it is not used to tune rules or parameters. "
-            "Each segment is simulated independently; positions still open at a segment boundary are excluded. "
+            "Each segment is simulated independently; positions still open at a segment boundary are reported separately and excluded from completed-trade metrics. "
             "This is a fixed-rule chronological holdout, not walk-forward optimization."
         ),
     }
