@@ -20,9 +20,9 @@ from typing import Any
 import requests
 from dotenv import load_dotenv
 
-from gold_signal.config import TIMEFRAMES
-from gold_signal.indicators import atr, ema, rsi
+from gold_signal.config import DEFAULT_SIGNAL_TTL_CANDLES, TIMEFRAMES
 from gold_signal.market_data import _is_expected_gold_pause
+from gold_signal.strategy import detect_signals
 
 API_URL = "https://api.twelvedata.com/time_series"
 WARMUP_BARS = 200
@@ -140,36 +140,39 @@ def select_test_window_signals(signals: list[dict[str, Any]], start: date) -> li
 
 def generate_signals(bars: list[dict[str, Any]], atr_mult: float,
                      tp1_r: float, tp2_r: float) -> list[dict[str, Any]]:
-    closes = [b["close"] for b in bars]
-    fast, slow = ema(closes, 20), ema(closes, 50)
-    momentum, volatility = rsi(closes, 14), atr(bars, 14)
-    found = []
-    for i in range(1, len(bars)):
-        if any(x is None for x in (fast[i], fast[i-1], slow[i], momentum[i], volatility[i])):
-            continue
-        side = None
-        if closes[i-1] <= fast[i-1] and closes[i] > fast[i] and fast[i] > slow[i] and 50 <= momentum[i] <= 70:
-            side = "BUY"
-        elif closes[i-1] >= fast[i-1] and closes[i] < fast[i] and fast[i] < slow[i] and 30 <= momentum[i] <= 50:
-            side = "SELL"
-        if not side:
-            continue
-        risk = float(volatility[i]) * atr_mult
-        if not math.isfinite(risk) or risk <= 0:
-            continue
-        entry = closes[i]
-        sign = 1 if side == "BUY" else -1
-        found.append({
-            "signal_time": bars[i]["time"], "side": side, "entry": entry,
-            "stop": entry - sign * risk, "tp1": entry + sign * risk * tp1_r,
-            "tp2": entry + sign * risk * tp2_r, "risk": risk, "signal_index": i,
+    """Adapt the live strategy output to the historical simulator schema.
+
+    Signal conditions and risk/target levels are owned exclusively by
+    detect_signals(); this function performs only index/schema adaptation.
+    """
+    indices = {bar["time"]: index for index, bar in enumerate(bars)}
+    live_signals = detect_signals(
+        bars, atr_multiplier=atr_mult, tp1_r=tp1_r, tp2_r=tp2_r,
+    )
+    adapted = []
+    for signal in live_signals:
+        entry = float(signal["entry"])
+        stop = float(signal["stop_loss"])
+        adapted.append({
+            "signal_time": signal["candle_time"],
+            "side": signal["side"],
+            "entry": entry,
+            "stop": stop,
+            "tp1": float(signal["take_profit_1"]),
+            "tp2": float(signal["take_profit_2"]),
+            "risk": abs(entry - stop),
+            "signal_index": indices[signal["candle_time"]],
         })
-    return found
+    return adapted
 
 
 def simulate(bars: list[dict[str, Any]], signals: list[dict[str, Any]],
-             cost_per_side: float) -> tuple[list[dict[str, Any]], int]:
-    """One position at a time; half off at TP1, half at TP2; stop-first ambiguity."""
+             cost_per_side: float, *,
+             signal_ttl_candles: int = DEFAULT_SIGNAL_TTL_CANDLES
+             ) -> tuple[list[dict[str, Any]], int]:
+    """One position at a time; TP/SL first, then close remaining size at TTL close."""
+    if type(signal_ttl_candles) is not int or signal_ttl_candles < 1:
+        raise ValueError("signal_ttl_candles must be a positive integer")
     trades: list[dict[str, Any]] = []
     busy_until = -1
     skipped_overlap = 0
@@ -186,7 +189,9 @@ def simulate(bars: list[dict[str, Any]], signals: list[dict[str, Any]],
         exit_reason = "OPEN_AT_END"
         exit_time = ""
         exit_index = len(bars) - 1
-        for j in range(idx + 1, len(bars)):
+        expiry_index = idx + signal_ttl_candles
+        last_evaluable_index = min(expiry_index, len(bars) - 1)
+        for j in range(idx + 1, last_evaluable_index + 1):
             bar = bars[j]
             # Entry cost was charged once above; each exit leg pays one exit cost.
             stop_hit = bar["low"] <= sig["stop"] if sign == 1 else bar["high"] >= sig["stop"]
@@ -207,6 +212,13 @@ def simulate(bars: list[dict[str, Any]], signals: list[dict[str, Any]],
                 fill = max(bar["open"], sig["tp2"]) if sign == 1 else min(bar["open"], sig["tp2"])
                 realized_r += remaining * (sign * (fill - sig["entry"]) - cost_per_side) / risk
                 exit_reason, exit_time, exit_index = "TP2", bar["time"].isoformat(), j
+                break
+            if j == expiry_index:
+                # Expiry closes at the TTLth completed candle's close.
+                realized_r += remaining * (
+                    sign * (bar["close"] - sig["entry"]) - cost_per_side
+                ) / risk
+                exit_reason, exit_time, exit_index = "EXPIRED", bar["time"].isoformat(), j
                 break
         if exit_reason == "OPEN_AT_END":
             # Keep the position open through the end; later signals cannot overlap it.
@@ -335,6 +347,7 @@ def evaluate_chronological_holdout(
     bars: list[dict[str, Any]], signals: list[dict[str, Any]],
     cost_per_side: float, *, development_fraction: float = 0.70,
     minimum_bars: int = 100,
+    signal_ttl_candles: int = DEFAULT_SIGNAL_TTL_CANDLES,
 ) -> dict[str, Any]:
     """Evaluate fixed rules on a chronological development/untouched holdout split."""
     if not 0.5 <= development_fraction < 0.9:
@@ -370,7 +383,10 @@ def evaluate_chronological_holdout(
             signal_time = signal["signal_time"]
             if signal_time in index_by_time:
                 window_signals.append({**signal, "signal_index": index_by_time[signal_time]})
-        trades, skipped = simulate(window_bars, window_signals, cost_per_side)
+        trades, skipped = simulate(
+            window_bars, window_signals, cost_per_side,
+            signal_ttl_candles=signal_ttl_candles,
+        )
         output[name] = summarize(
             trades, window_signals, skipped, window_bars,
             start_time.date(), end_time.date(),
@@ -388,14 +404,16 @@ def main() -> int:
     parser.add_argument("--tp1-r", type=float, default=float(os.getenv("GOLD_TP1_R", "1.0")))
     parser.add_argument("--tp2-r", type=float, default=float(os.getenv("GOLD_TP2_R", "2.0")))
     parser.add_argument("--cost-per-side", type=float, default=0.0, help="Estimated spread/slippage cost in XAU/USD price units per side; 0 means costs omitted.")
+    parser.add_argument("--signal-ttl-candles", type=int, default=int(os.getenv("SIGNAL_TTL_CANDLES", str(DEFAULT_SIGNAL_TTL_CANDLES))), help="Close unresolved signals after this many completed candles (default: 24).")
     parser.add_argument("--out", default="gold_backtest")
     args = parser.parse_args()
     start, end = date.fromisoformat(args.start), date.fromisoformat(args.end)
     numeric = (args.atr_multiplier, args.tp1_r, args.tp2_r, args.cost_per_side)
     if (end < start or not all(math.isfinite(v) for v in numeric)
             or args.atr_multiplier <= 0 or args.tp1_r <= 0
-            or args.tp2_r <= args.tp1_r or args.cost_per_side < 0):
-        parser.error("Require end >= start, finite positive ATR/TP1, TP2 > TP1, and finite nonnegative costs.")
+            or args.tp2_r <= args.tp1_r or args.cost_per_side < 0
+            or args.signal_ttl_candles < 1):
+        parser.error("Require end >= start, finite positive ATR/TP1, TP2 > TP1, nonnegative costs, and SIGNAL_TTL_CANDLES >= 1.")
     key = os.getenv("GOLD_TWELVE_DATA_API_KEY", "").strip()
     if not key:
         parser.error("Set GOLD_TWELVE_DATA_API_KEY in the project-root .env; do not paste it into chat or commit it.")
@@ -412,8 +430,12 @@ def main() -> int:
             )
         all_signals = generate_signals(bars, args.atr_multiplier, args.tp1_r, args.tp2_r)
         signals = select_test_window_signals(all_signals, start)
-        trades, skipped = simulate(bars, signals, args.cost_per_side)
+        trades, skipped = simulate(
+            bars, signals, args.cost_per_side,
+            signal_ttl_candles=args.signal_ttl_candles,
+        )
         report = summarize(trades, signals, skipped, bars, start, end)
+        report["signal_ttl_candles"] = args.signal_ttl_candles
         report["warmup_bars_requested"] = WARMUP_BARS
         report["warmup_candles_downloaded"] = warmup_count
         report["first_test_candle"] = next(
@@ -424,7 +446,8 @@ def main() -> int:
         test_end = datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
         test_window_bars = [bar for bar in bars if test_start <= bar["time"] < test_end]
         report["chronological_holdout"] = evaluate_chronological_holdout(
-            test_window_bars, signals, args.cost_per_side
+            test_window_bars, signals, args.cost_per_side,
+            signal_ttl_candles=args.signal_ttl_candles,
         )
         report["estimated_cost_per_side_price_units"] = args.cost_per_side
         out = Path(args.out)
