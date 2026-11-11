@@ -40,6 +40,10 @@ class IndicatorTests(unittest.TestCase):
         self.assertAlmostEqual(result[3], 75.0)
         self.assertTrue(all(0.0 <= value <= 100.0 for value in result if value is not None))
 
+    def test_rsi_flat_market_is_neutral(self):
+        result = rsi([100.0] * 20, 14)
+        self.assertTrue(all(value == 50.0 for value in result[14:] if value is not None))
+
     def test_atr_matches_known_reference_value(self):
         bars = [
             {"open": 10.0, "high": 12.0, "low": 9.0, "close": 10.0},
