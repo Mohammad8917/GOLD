@@ -23,15 +23,11 @@ class CatchupTests(unittest.TestCase):
         candles = bars()
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory) / "state.json"
-            seen = []
-            def detect(prefix, **_kwargs):
-                seen.append(prefix[-1]["time"])
-                return None
             with patch("gold_signal.service.fetch_closed_candles", return_value=candles), \
-                 patch("gold_signal.service.detect_signal", side_effect=detect):
+                 patch("gold_signal.service.detect_signals", return_value=[]) as detect:
                 result = run_once(config(state))
             self.assertEqual(result, "processed_no_signal")
-            self.assertEqual(seen, [candles[-1]["time"]])
+            detect.assert_called_once()
             self.assertEqual(read_state(state), candles[-1]["time"].isoformat())
 
     def test_outage_catchup_processes_every_new_bar_in_order(self):
@@ -39,20 +35,16 @@ class CatchupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory) / "state.json"
             write_state(state, candles[59]["time"])
-            seen = []
-            def detect(prefix, **_kwargs):
-                stamp = prefix[-1]["time"]
-                seen.append(stamp)
-                if stamp in (candles[60]["time"], candles[61]["time"]):
-                    return {"side": "BUY", "candle_time": stamp}
-                return None
+            signals = [
+                {"side": "BUY", "candle_time": candles[60]["time"]},
+                {"side": "SELL", "candle_time": candles[61]["time"]},
+            ]
             with patch("gold_signal.service.fetch_closed_candles", return_value=candles), \
-                 patch("gold_signal.service.detect_signal", side_effect=detect), \
+                 patch("gold_signal.service.detect_signals", return_value=signals), \
                  patch("gold_signal.service.send_telegram") as send, \
                  patch("gold_signal.service.format_signal", side_effect=lambda d, _tf: str(d)):
                 result = run_once(config(state))
             self.assertEqual(result, "sent_catchup")
-            self.assertEqual(seen, [candles[60]["time"], candles[61]["time"]])
             self.assertEqual(send.call_count, 2)
             self.assertEqual(read_state(state), candles[-1]["time"].isoformat())
 
