@@ -8,7 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from backtest_historical import (  # noqa: E402
-    monte_carlo_risk_metrics, select_test_window_signals, simulate,
+    evaluate_chronological_holdout, monte_carlo_risk_metrics,
+    select_test_window_signals, simulate,
     validate_history_continuity,
     validate_test_window_coverage,
 )
@@ -72,6 +73,29 @@ class HistoricalBacktestExecutionTests(unittest.TestCase):
         self.assertEqual(len(trades), 1)
         self.assertEqual(trades[0]["exit_reason"], "SL")
         self.assertAlmostEqual(trades[0]["net_r"], -1.0, places=6)
+
+
+class ChronologicalHoldoutTests(unittest.TestCase):
+    def test_insufficient_history_is_not_reported_as_holdout_result(self) -> None:
+        result = evaluate_chronological_holdout(
+            [candle(i) for i in range(50)], [], 0.0
+        )
+        self.assertEqual(result["status"], "insufficient_history")
+
+    def test_development_and_holdout_are_separated_by_time(self) -> None:
+        bars = [candle(i) for i in range(100)]
+        signals = [
+            {**signal(10), "signal_time": bars[10]["time"]},
+            {**signal(80), "signal_time": bars[80]["time"]},
+        ]
+        result = evaluate_chronological_holdout(bars, signals, 0.0)
+        self.assertEqual(result["status"], "computed")
+        self.assertEqual(result["split_time"], bars[70]["time"].isoformat())
+        self.assertEqual(result["development"]["signals_generated"], 1)
+        self.assertEqual(result["holdout"]["signals_generated"], 1)
+        self.assertIn("not walk-forward optimization", result["warning"])
+
+
 
 
 class MonteCarloRiskTests(unittest.TestCase):
