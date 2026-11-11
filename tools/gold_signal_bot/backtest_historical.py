@@ -330,6 +330,53 @@ def summarize(trades: list[dict[str, Any]], signals: list[dict[str, Any]],
     }
 
 
+
+def evaluate_chronological_holdout(
+    bars: list[dict[str, Any]], signals: list[dict[str, Any]],
+    cost_per_side: float, *, development_fraction: float = 0.70,
+    minimum_bars: int = 100,
+) -> dict[str, Any]:
+    """Evaluate fixed rules on a chronological development/untouched holdout split."""
+    if not 0.5 <= development_fraction < 0.9:
+        raise ValueError("development_fraction must be between 0.5 and 0.9")
+    test_bars = bars
+    if len(test_bars) < minimum_bars:
+        return {
+            "status": "insufficient_history", "test_candles": len(test_bars),
+            "minimum_candles": minimum_bars,
+        }
+    split_index = int(len(test_bars) * development_fraction)
+    if split_index <= 0 or split_index >= len(test_bars):
+        return {"status": "invalid_split", "test_candles": len(test_bars)}
+    windows = (
+        ("development", test_bars[:split_index], signals),
+        ("holdout", test_bars[split_index:], signals),
+    )
+    output: dict[str, Any] = {
+        "status": "computed", "method": "chronological_fixed-rule_holdout",
+        "development_fraction": development_fraction,
+        "split_time": test_bars[split_index]["time"].isoformat(),
+        "warning": (
+            "The holdout is only independent if it is not used to tune rules or parameters. "
+            "This is a fixed-rule chronological holdout, not walk-forward optimization."
+        ),
+    }
+    for name, window_bars, _ in windows:
+        start_time, end_time = window_bars[0]["time"], window_bars[-1]["time"]
+        index_by_time = {bar["time"]: index for index, bar in enumerate(window_bars)}
+        window_signals = []
+        for signal in signals:
+            signal_time = signal["signal_time"]
+            if signal_time in index_by_time:
+                window_signals.append({**signal, "signal_index": index_by_time[signal_time]})
+        trades, skipped = simulate(window_bars, window_signals, cost_per_side)
+        output[name] = summarize(
+            trades, window_signals, skipped, window_bars,
+            start_time.date(), end_time.date(),
+        )
+    return output
+
+
 def main() -> int:
     load_dotenv(Path(__file__).resolve().parents[3] / ".env")
     parser = argparse.ArgumentParser(description="Historical XAU/USD backtest; no trading execution.")
@@ -371,6 +418,12 @@ def main() -> int:
         report["first_test_candle"] = next(
             (bar["time"].isoformat() for bar in bars if bar["time"] >= start_utc),
             None,
+        )
+        test_start = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
+        test_end = datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+        test_window_bars = [bar for bar in bars if test_start <= bar["time"] < test_end]
+        report["chronological_holdout"] = evaluate_chronological_holdout(
+            test_window_bars, signals, args.cost_per_side
         )
         report["estimated_cost_per_side_price_units"] = args.cost_per_side
         out = Path(args.out)
