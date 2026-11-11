@@ -8,7 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from backtest_historical import (  # noqa: E402
-    select_test_window_signals, simulate, validate_history_continuity,
+    monte_carlo_risk_metrics, select_test_window_signals, simulate,
+    validate_history_continuity,
     validate_test_window_coverage,
 )
 
@@ -71,6 +72,31 @@ class HistoricalBacktestExecutionTests(unittest.TestCase):
         self.assertEqual(len(trades), 1)
         self.assertEqual(trades[0]["exit_reason"], "SL")
         self.assertAlmostEqual(trades[0]["net_r"], -1.0, places=6)
+
+
+class MonteCarloRiskTests(unittest.TestCase):
+    def test_insufficient_trade_sample_is_not_given_false_precision(self) -> None:
+        result = monte_carlo_risk_metrics([0.5, -0.2] * 10)
+        self.assertEqual(result["status"], "insufficient_sample")
+        self.assertEqual(result["trade_count"], 20)
+
+    def test_bootstrap_is_reproducible_and_reports_risk_percentiles(self) -> None:
+        returns = [0.8, -0.4, 0.3, -0.2, 1.1, -0.7] * 6
+        first = monte_carlo_risk_metrics(returns, simulations=200, block_size=3, seed=7)
+        second = monte_carlo_risk_metrics(returns, simulations=200, block_size=3, seed=7)
+        self.assertEqual(first, second)
+        self.assertEqual(first["status"], "computed")
+        self.assertEqual(first["simulations"], 200)
+        self.assertIn("p05", first["net_r_percentiles"])
+        self.assertIn("p95", first["max_drawdown_r_percentiles"])
+        self.assertGreaterEqual(first["probability_of_net_loss_percent"], 0.0)
+        self.assertLessEqual(first["probability_of_net_loss_percent"], 100.0)
+
+    def test_bootstrap_rejects_non_finite_trade_returns(self) -> None:
+        with self.assertRaisesRegex(ValueError, "finite"):
+            monte_carlo_risk_metrics([1.0] * 29 + [float("nan")])
+
+
 
 
 class HistoricalCoverageTests(unittest.TestCase):
