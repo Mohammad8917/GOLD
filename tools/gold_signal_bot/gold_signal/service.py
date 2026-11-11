@@ -35,6 +35,19 @@ def _redact_error(error: Exception, config: Config) -> str:
     return value[:500]
 
 
+def _trim_sent_history(outbox: dict[str, dict], limit: int = 1000) -> None:
+    """Bound the audit journal while never deleting an unfinished delivery."""
+    sent = sorted(
+        (
+            (record.get("updated_at", ""), key)
+            for key, record in outbox.items()
+            if record.get("status") == "SENT"
+        )
+    )
+    for _, key in sent[:-limit]:
+        outbox.pop(key, None)
+
+
 def run_once(config: Config, session: requests.Session | None = None) -> str:
     """Process new closed candles; WAL recovery prefers a visible duplicate to a lost signal.
 
@@ -71,18 +84,6 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
                 (i for i, candle in enumerate(candles) if candle["time"] > cursor),
                 len(candles),
             )
-            # A crash after cursor fsync but before WAL cleanup leaves harmless
-            # SENT records behind. Remove records already covered by the cursor.
-            stale_ids = [
-                key for key, record in outbox.items()
-                if record.get("signal_timestamp")
-                and parse_bar_time(record["signal_timestamp"]) <= cursor
-            ]
-            if stale_ids:
-                for key in stale_ids:
-                    outbox.pop(key, None)
-                write_outbox(config.state_file, outbox)
-
         if start_index >= len(candles):
             LOG.info("No new confirmed GOLD signal on %s", config.timeframe)
             return "no_signal"
@@ -114,9 +115,8 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
 
                 if record and record.get("status") == "SENT":
                     # Telegram success was durably recorded before cursor commit.
+                    # Keep the record as an audit entry including message_id.
                     write_state(config.state_file, stamp)
-                    outbox.pop(key, None)
-                    write_outbox(config.state_file, outbox)
                     processed += 1
                     continue
 
@@ -124,6 +124,14 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
                 if record and record.get("status") == "SENDING":
                     record["status"] = "UNKNOWN"
                     record["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    outbox[key] = record
+                    write_outbox(config.state_file, outbox)
+                    record.setdefault("recovery_history", []).append({
+                        "at": record["updated_at"],
+                        "from": "SENDING",
+                        "to": "UNKNOWN",
+                        "decision": "retry with [RECOVERY RETRY]",
+                    })
                     outbox[key] = record
                     write_outbox(config.state_file, outbox)
                     LOG.error(
@@ -144,6 +152,7 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
                         "message": message,
                         "telegram_message_id": None,
                         "last_error": None,
+                        "recovery_history": [],
                         "updated_at": datetime.now(timezone.utc).isoformat(),
                     }
                     outbox[key] = record
@@ -165,28 +174,55 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
                         config, message, session=session,
                     )
                 except Exception as exc:
-                    record["status"] = "UNKNOWN"
+                    status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                    definitive_rejection = (
+                        isinstance(exc, RuntimeError)
+                        and str(exc).startswith("Telegram rejected")
+                    ) or (
+                        isinstance(exc, requests.HTTPError)
+                        and isinstance(status_code, int)
+                        and 400 <= status_code < 500
+                    )
+                    record["status"] = "FAILED" if definitive_rejection else "UNKNOWN"
                     record["last_error"] = _redact_error(exc, config)
                     record["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    record.setdefault("recovery_history", []).append({
+                        "at": record["updated_at"],
+                        "from": "SENDING",
+                        "to": record["status"],
+                        "decision": (
+                            "retry as a definitive rejection; no recovery marker"
+                            if definitive_rejection
+                            else "retry with [RECOVERY RETRY] because delivery is ambiguous"
+                        ),
+                    })
                     outbox[key] = record
                     write_outbox(config.state_file, outbox)
-                    LOG.error(
-                        "Signal %s delivery outcome is UNKNOWN; cursor remains unchanged; "
-                        "next attempt will use [RECOVERY RETRY]: %s",
-                        key, record["last_error"],
-                    )
+                    if definitive_rejection:
+                        LOG.error(
+                            "Telegram definitively rejected signal %s; cursor remains unchanged; "
+                            "retry will be visible in logs: %s",
+                            key, record["last_error"],
+                        )
+                    else:
+                        LOG.error(
+                            "Signal %s delivery outcome is UNKNOWN; cursor remains unchanged; "
+                            "next attempt will use [RECOVERY RETRY]: %s",
+                            key, record["last_error"],
+                        )
                     raise
 
                 record["status"] = "SENT"
-                record["telegram_message_id"] = message_id
+                record["telegram_message_id"] = (
+                    message_id if isinstance(message_id, int) else None
+                )
                 record["updated_at"] = datetime.now(timezone.utc).isoformat()
                 outbox[key] = record
+                _trim_sent_history(outbox)
                 write_outbox(config.state_file, outbox)
 
                 # Commit cursor only after the SENT WAL record is durable.
                 write_state(config.state_file, stamp)
-                outbox.pop(key, None)
-                write_outbox(config.state_file, outbox)
                 delivered += 1
                 LOG.info(
                     "Delivered %s XAU/USD signal for candle %s (Telegram message_id=%s)",
