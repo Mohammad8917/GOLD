@@ -16,17 +16,17 @@ The work is intentionally stacked so each stage can be reviewed independently:
 3. PR #9 — feature/telegram-signal-lifecycle → PR #8 branch
    - TP1/TP2/SL Telegram lifecycle messages, durable recovery, Windows stability monitor, and manual live-validation workflows.
 
-All three PRs are Draft/Open. No PR has been merged. Do not merge until the user explicitly approves after reviewing live validation results.
+All three PRs have been merged into `main` in dependency order: PR #7 (222eb8b), PR #8 (761c7d4), and PR #9 (23cf967). The current `main` head is `23cf96741829933ef8e542ce9f7894cb70421653`.
 
 ## Verified automated checks
 
 | Stage | GitHub Actions | Offline tests per OS | Mutation audit per OS | WAL crash tests |
 |---|---|---:|---:|---|
-| PR #7 | Signal Bot run #134 (also duplicate #135) | 132 | 12/12 killed | WAL crash run #62 passed on Ubuntu + Windows |
-| PR #8 | Signal Bot run #137 (also duplicate #136) | 146 | 15/15 killed | Shared WAL crash coverage from run #62 |
-| PR #9 | Signal Bot run #152 | 159 | 21/21 killed | Shared WAL crash coverage from run #62 |
+| PR #7 | Signal Bot run #134 | 132 | 12/12 killed | WAL crash run #62 passed on Ubuntu + Windows |
+| PR #8 | Signal Bot run #159 | 146 | 15/15 killed | Shared WAL crash coverage from run #62 |
+| PR #9 | Signal Bot run #164 | 159 | 21/21 killed | Shared WAL crash coverage from run #62 |
 
-Current tested heads: PR #7 `1b3e176d15752e67c22ac5e066110cb3d6e43def`; PR #8 `4278d583addabe6de1222a1b998a3d2fbc85a149`; PR #9 `20ca288ac78393b3fa4e10d3633e2567c92f9993`. Each signal-test run passed on Ubuntu and Windows with zero surviving mutations. PR #9's Windows PowerShell parser check for stability_monitor.ps1 also passed. Its added static safety contract rejects exchange SDK imports, common order-placement calls, exchange API hosts, and any HTTP POST outside the Telegram sender. The latest WAL crash run executed 3 subprocess crash-boundary tests per OS and passed.
+Tested heads: PR #7 `1b3e176d15752e67c22ac5e066110cb3d6e43def`; PR #8 `249c771d2f61d816c497507718b78f840654e7e4`; PR #9 `5682e1fb90742381e7422f32c41075c69d8a4e8d`. Each signal-test run passed on Ubuntu and Windows with zero surviving mutations. PR #9's Windows PowerShell parser check for stability_monitor.ps1 also passed. Its static safety contract rejects exchange SDK imports, common order-placement calls, exchange API hosts, and any HTTP POST outside the Telegram sender. WAL crash run #62 executed 3 subprocess crash-boundary tests per OS and passed.
 
 These checks validate offline code paths and selected crash boundaries. They do not prove strategy profitability, provider account entitlement, live Telegram delivery, or long-duration Windows stability.
 
@@ -55,13 +55,12 @@ These checks validate offline code paths and selected crash boundaries. They do 
 - Require the process to remain alive, state/WAL JSON to remain readable, memory to remain explainably stable, and no delivery/history errors to remain unresolved.
 - Review bot logs and actual Telegram messages alongside the monitor CSV.
 
-### 4. Final review and merge decision
+### 4. Post-merge operational acceptance
 
-- Review all real-data and Windows staging evidence.
-- Confirm the bot remains signal-only and no exchange/broker code or secrets were introduced.
-- Retarget PR #8 to main after PR #7 is merged, rerun CI, and review.
-- Retarget PR #9 to main after PR #8 is merged, rerun CI, and review.
-- Obtain explicit user approval before each merge.
+- The source code is already merged into `main`; do not treat this as proof of live operational readiness.
+- Run the real-data backtest/parity workflow and the Telegram connectivity workflow, then review their artifacts and confirm the Telegram test arrives.
+- Complete the 24–72-hour Windows 11 staging run before relying on continuous notifications.
+- Keep the notifier in signal-only mode; never add exchange/broker credentials or order execution.
 
 ## Secret handling
 
