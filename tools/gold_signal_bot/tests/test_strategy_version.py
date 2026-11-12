@@ -36,7 +36,7 @@ class StrategyVersionTests(unittest.TestCase):
         }
         cosmetic = {
             "strategy.py": "# leading comment\n\ndef signal ( x ) :  # trailing comment\n\n    return x>10  # inline\n",
-            "indicators.py": "def rsi( x ):\n\treturn ( x/2 )\n",
+            "indicators.py": "def rsi( x ):\n\treturn x / 2\n",
         }
         self.assertEqual(strategy_source_hash(original), strategy_source_hash(cosmetic))
 
