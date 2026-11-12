@@ -63,6 +63,17 @@ class TelegramCliTests(unittest.TestCase):
         self.assertEqual(run.call_count, 5)
         self.assertTrue(all(call.args[0].retry_attempts == 1 for call in run.call_args_list))
 
+    def test_current_candle_retry_stops_when_five_minute_grace_has_elapsed(self):
+        config = self.make_retry_config()
+        import time
+        retry_clock = int(time.time() // 900) * 900 + 301
+        with patch("time.time", return_value=retry_clock), patch(
+            "gold_signal.cli.run_once", return_value="no_signal"
+        ) as run:
+            result = _run_current_candle_with_retry(config, self.NoWaitEvent())
+        self.assertEqual(result, "no_signal")
+        self.assertEqual(run.call_count, 1)
+
     def test_heartbeat_transport_sets_telegram_silent_flag(self):
         config = SimpleNamespace(bot_token="test-token", chat_id="test-chat", http_timeout=5)
         response = Mock()
