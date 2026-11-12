@@ -391,9 +391,11 @@ class FetchTests(unittest.TestCase):
             session = Mock()
             session.get.side_effect = requests.Timeout("offline")
             with patch("gold_signal.market_data.time.sleep"):
-                with self.assertRaises(requests.Timeout):
+                with self.assertRaisesRegex(RuntimeError, "Timeout") as caught:
                     fetch_closed_candles(config, session=session)
         self.assertEqual(session.get.call_count, config.retry_attempts)
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertIsNone(caught.exception.__context__)
 
     def test_provider_response_with_non_dict_candle_is_rejected(self):
         with TemporaryDirectory() as folder:
