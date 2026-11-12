@@ -14,6 +14,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+$StateFile = [System.IO.Path]::GetFullPath($StateFile)
 
 $script:TelegramBotToken = $env:GOLD_TELEGRAM_BOT_TOKEN
 $script:TelegramChatId = $env:GOLD_TELEGRAM_CHAT_ID
@@ -90,6 +91,7 @@ while ((Get-Date) -lt $deadline) {
     $sampleTime = (Get-Date).ToUniversalTime().ToString("o")
     $alive = $true
     try {
+        if ($ProcessId -le 0) { throw "No valid GOLD process ID is available after a failed restart." }
         $process = Get-Process -Id $ProcessId -ErrorAction Stop
     }
     catch {
