@@ -132,6 +132,22 @@ class LiveMarketDataErrorRedactionTests(unittest.TestCase):
         self.assertIn("code 400", str(caught.exception))
         assert_redacted(self, caught.exception)
 
+    def test_malicious_provider_code_is_not_echoed(self) -> None:
+        class Response:
+            status_code = 200
+
+            def json(self):
+                return {"status": "error", "code": MALICIOUS_URL, "message": "provider failure"}
+
+        class Session:
+            def get(self, *_args, **_kwargs):
+                return Response()
+
+        with self.assertRaises(RuntimeError) as caught:
+            fetch_closed_candles(config(), Session())
+        self.assertIn("error response", str(caught.exception))
+        assert_redacted(self, caught.exception)
+
     def test_invalid_json_error_is_sanitized_without_exception_context(self) -> None:
         class Response:
             status_code = 200
