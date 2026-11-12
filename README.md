@@ -26,7 +26,9 @@
 این فقط یک استراتژی نمونه قابل‌آزمایش است، نه تضمین دقت یا سودآوری. پیش از استفاده واقعی، بک‌تست، آزمون خارج از نمونه و forward-test لازم است. قیمت XAU/USD ارائه‌دهنده ممکن است با قیمت کارگزار و اسپرد آن متفاوت باشد.
 
 ## پیش‌نیازها
-- Windows 11 و Python 3.11+
+- Windows 11
+- Python 3.11.x (تنها نسخه‌ای که در حال حاضر در CI به‌طور کامل روی Ubuntu و Windows آزموده شده و نسخهٔ رسمیِ تأییدشدهٔ این شاخه است)
+- Python 3.12 و 3.13 هنوز در این شاخه تأیید رسمی نشده‌اند؛ تست fingerprint مبتنی بر AST بین نسخه‌های Python حساس است و سازگاری آن‌ها باید در PR جداگانه بررسی و اصلاح شود. این وضعیت به‌تنهایی اثبات نمی‌کند که سایر بخش‌های برنامه در این نسخه‌ها ناسازگارند.
 - کلید API از Twelve Data برای XAU/USD
 - ربات تلگرام و Chat ID مقصد
 - اینترنت پایدار
@@ -36,7 +38,7 @@
 ## نصب در Windows 11 / PowerShell
 از ریشه مخزن اجرا کن:
 
-    py -3 -m venv .venv-gold
+    py -3.11 -m venv .venv-gold
     .\.venv-gold\Scripts\Activate.ps1
     python -m pip install --upgrade pip
     pip install -r tools\gold_signal_bot\requirements.txt
