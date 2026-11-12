@@ -1,0 +1,84 @@
+name: GOLD real-data backtest and parity (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: "First backtest date (UTC, YYYY-MM-DD)"
+        required: true
+        default: "2024-11-12"
+        type: string
+      end_date:
+        description: "Last backtest date (UTC, YYYY-MM-DD)"
+        required: true
+        default: "2026-11-11"
+        type: string
+      timeframe:
+        description: "Twelve Data candle interval"
+        required: true
+        default: "1h"
+        type: choice
+        options:
+          - 15min
+          - 1h
+          - 4h
+          - 1day
+      cost_per_side:
+        description: "Estimated XAU/USD price cost per side; set realistically"
+        required: true
+        default: "0"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  historical-backtest:
+    name: Windows real-data backtest
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      GOLD_TWELVE_DATA_API_KEY: ${{ secrets.GOLD_TWELVE_DATA_API_KEY }}
+      GOLD_TIMEFRAME: ${{ inputs.timeframe }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify Twelve Data secret is configured
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:GOLD_TWELVE_DATA_API_KEY)) {
+            throw "Repository Actions secret GOLD_TWELVE_DATA_API_KEY is missing."
+          }
+
+      - name: Install backtest dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r tools\gold_signal_bot\requirements.txt
+
+      - name: Run historical XAU/USD backtest
+        shell: pwsh
+        run: |
+          python tools\gold_signal_bot\backtest_historical.py --start "${{ inputs.start_date }}" --end "${{ inputs.end_date }}" --timeframe "${{ inputs.timeframe }}" --cost-per-side "${{ inputs.cost_per_side }}" --out reports\xauusd_2y
+
+      - name: Export real-feed live/backtest parity fixture
+        shell: pwsh
+        run: |
+          python tools\gold_signal_bot\export_parity_fixture.py --start 2026-10-01 --end 2026-11-11 --timeframe "1h" --min-candles 200 --out reports\twelvedata_xauusd_parity.json
+
+      - name: Upload sanitized reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: GOLD-XAUUSD-real-data-validation
+          path: |
+            reports/xauusd_2y.json
+            reports/xauusd_2y.csv
+            reports/twelvedata_xauusd_parity.json
+          if-no-files-found: error
+          retention-days: 30

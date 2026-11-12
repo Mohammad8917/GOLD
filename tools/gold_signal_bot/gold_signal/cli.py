@@ -42,8 +42,13 @@ def main() -> int:
         return 2
     if args.test_telegram:
         try:
-            send_telegram(config, "✅ QuantDinger GOLD notifier: اتصال تلگرام موفق است.\nاین پیام آزمایشی است؛ معامله‌ای اجرا نمی‌شود.")
-            LOG.info("Telegram test message delivered")
+            message_id = send_telegram(
+                config,
+                "✅ QuantDinger GOLD notifier: اتصال تلگرام موفق است.\nاین پیام آزمایشی است؛ معامله‌ای اجرا نمی‌شود.",
+            )
+            if type(message_id) is not int or message_id <= 0:
+                raise RuntimeError("Telegram test returned success without a valid message_id")
+            LOG.info("Telegram test message delivered (message_id=%s)", message_id)
             return 0
         except Exception as exc:
             LOG.error("Telegram test failed: %s", _redact(exc, config))

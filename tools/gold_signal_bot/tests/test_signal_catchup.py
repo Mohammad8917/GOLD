@@ -61,8 +61,16 @@ class CatchupTests(unittest.TestCase):
             state = Path(directory) / "state.json"
             write_state(state, candles[199]["time"])
             signals = [
-                {"side": "BUY", "candle_time": candles[200]["time"]},
-                {"side": "SELL", "candle_time": candles[201]["time"]},
+                {
+                    "side": "BUY", "candle_time": candles[200]["time"],
+                    "entry": 100.0, "stop_loss": 90.0,
+                    "take_profit_1": 110.0, "take_profit_2": 120.0,
+                },
+                {
+                    "side": "SELL", "candle_time": candles[201]["time"],
+                    "entry": 100.0, "stop_loss": 110.0,
+                    "take_profit_1": 90.0, "take_profit_2": 80.0,
+                },
             ]
             with patch("gold_signal.service.fetch_closed_candles", return_value=candles), \
                  patch("gold_signal.service.detect_signals", return_value=signals), \

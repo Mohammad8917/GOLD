@@ -45,6 +45,18 @@ jobs:
         run: |
           python -m compileall -q tools/gold_signal_bot
 
+      - name: Validate Windows stability monitor PowerShell syntax
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path "tools/gold_signal_bot/stability_monitor.ps1"), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | Format-List
+            throw "PowerShell syntax validation failed."
+          }
+
       - name: Compile bot and test module
         run: |
           python -m py_compile tools/gold_signal_bot/gold_signal_bot.py tools/gold_signal_bot/test_gold_signal_bot.py

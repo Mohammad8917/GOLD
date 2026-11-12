@@ -21,5 +21,12 @@ The root `.gitignore` excludes `.env` and explicitly allows only `.env.example`.
 - HTTP/code 401 and 403 are treated as credential/permission failures, not quota exhaustion. Network timeouts and connection errors retain bounded exponential retry behavior.
 - The pause is interruptible with Ctrl+C / SIGTERM. `--once` reports the error and exits rather than sleeping.
 
-## Pre-emptive warning\n\n- The notifier checks `/api_usage` at most once per UTC day during normal operation; this check costs one API credit.\n- At 80% or more of the daily plan limit, it sends one Telegram warning showing used credits, remaining credits, and the 00:00 UTC reset.\n- The check date and pending warning are stored in a separate atomic sidecar file next to the configured state file. A pending warning is retried without re-querying usage; a stale pending warning is discarded after the UTC daily reset.\n\n## Important\n
+## Pre-emptive warning
+
+- The notifier checks `/api_usage` at most once per UTC day during normal operation; this check costs one API credit.
+- At 80% or more of the daily plan limit, it sends one Telegram warning showing used credits, remaining credits, and the 00:00 UTC reset.
+- The check date and pending warning are stored in a separate atomic sidecar file next to the configured state file. A pending warning is retried without re-querying usage; a stale pending warning is discarded after the UTC daily reset.
+
+## Important
+
 The daily limit and per-minute limit are account-plan properties, not hard-coded constants. The implementation reads the live usage values returned by Twelve Data. A successful quota check does not guarantee market-data availability or trading performance.
