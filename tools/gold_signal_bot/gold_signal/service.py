@@ -29,6 +29,20 @@ def _signal_id(signal: dict, timeframe: str) -> str:
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
+def _signal_is_fresh(candle_time: datetime, timeframe: str, *, now: datetime | None = None,
+                     grace_seconds: int = 300) -> bool:
+    """A signal may be announced only within five minutes after its candle closes."""
+    if candle_time.tzinfo is None:
+        candle_time = candle_time.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        raise ValueError("Freshness clock must be timezone-aware")
+    interval = TIMEFRAMES[timeframe][1]
+    close_at = candle_time + timedelta(seconds=interval)
+    age = (current.astimezone(timezone.utc) - close_at.astimezone(timezone.utc)).total_seconds()
+    return 0 <= age <= grace_seconds
+
+
 def _redact_error(error: Exception, config: Config) -> str:
     value = str(error)
     for secret in (getattr(config, "api_key", ""), getattr(config, "bot_token", "")):
@@ -532,6 +546,32 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
                         f"WAL invariant violation: signal {key} is SENDING outside startup recovery"
                     )
                 recovery = bool(record and record.get("status") == "UNKNOWN")
+
+                # Catch-up candles advance the cursor and lifecycle WAL, but
+                # historical entries are never announced as new signals.
+                if not _signal_is_fresh(stamp, config.timeframe):
+                    if not record or record.get("status") != "SENT":
+                        now_iso = datetime.now(timezone.utc).isoformat()
+                        outbox[key] = {
+                            "signal_id": key,
+                            "signal_timestamp": stamp.isoformat(),
+                            "symbol": data.get("symbol", "XAU/USD"),
+                            "timeframe": config.timeframe,
+                            "side": data.get("side"),
+                            "entry": data.get("entry"),
+                            "stop_loss": data.get("stop_loss"),
+                            "take_profit_1": data.get("take_profit_1"),
+                            "take_profit_2": data.get("take_profit_2"),
+                            "status": "SKIPPED_STALE",
+                            "lifecycle_status": "CLOSED_STALE",
+                            "closed_at": now_iso,
+                            "close_reason": "Historical catch-up signal; never delivered",
+                            "updated_at": now_iso,
+                        }
+                        write_outbox(config.state_file, outbox)
+                    write_state(config.state_file, stamp)
+                    processed += 1
+                    continue
 
                 if not record:
                     message = format_signal(data, config.timeframe)
