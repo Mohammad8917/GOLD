@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import logging
 from dataclasses import replace
-from datetime import datetime, timezone
 import os
 import signal
 import threading
