@@ -38,6 +38,7 @@ The script downloads date-bounded chunks plus 200 pre-test warm-up candles for i
 - The 200 candles before the requested start date are used only to warm up EMA/RSI/ATR; signals before the requested test window are excluded.
 - Entry is the signal candle's closing price; this is a bar-close model, not a guaranteed executable fill.
 - The strategy uses EMA20/EMA50, RSI14, ATR14, ATR stop, TP1=1R and TP2=2R defaults.
+- The signal TTL defaults to one day scaled to the selected timeframe (15min=96, 1h=24, 4h=6 completed candles); the same TTL rule is used by the Telegram lifecycle expiry notifier.
 - One position at a time. A signal while a position is open is counted as skipped.
 - Half the position is taken off at TP1 and half at TP2. If stop and target are both touched within one OHLC candle, stop is assumed first (conservative ambiguity handling).
 - Gap-through stop/target fills use the candle open when it is worse than the level.

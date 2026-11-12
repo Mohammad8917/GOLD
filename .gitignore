@@ -17,6 +17,9 @@ gold-signal-state.lock
 .gold-signal-state*
 *.lock
 
+# Local backtest, parity, and stability reports (keep generated market data out of Git)
+reports/
+
 # Test and tooling artifacts
 .coverage
 htmlcov/

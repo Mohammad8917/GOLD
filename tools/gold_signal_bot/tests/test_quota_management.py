@@ -10,6 +10,7 @@ import requests
 from gold_signal.quota import API_USAGE_URL, QuotaLimitError, quota_error
 from gold_signal.market_data import TWELVE_DATA_URL, _get_with_retry
 from gold_signal.quota_warning import maybe_send_daily_quota_warning
+from gold_signal.service import run_once
 
 
 class QuotaManagementTests(unittest.TestCase):
@@ -125,6 +126,27 @@ class QuotaManagementTests(unittest.TestCase):
                 self.assertFalse(maybe_send_daily_quota_warning(config, Mock()))
             inspect.assert_not_called()
             send.assert_not_called()
+
+    def test_daily_quota_warning_runs_before_market_data_fetch(self):
+        with TemporaryDirectory() as folder:
+            config = SimpleNamespace(
+                state_file=Path(folder) / "state.json",
+                timeframe="15min",
+            )
+            calls = []
+
+            def warning(*args, **kwargs):
+                calls.append("warning")
+
+            def fetch(*args, **kwargs):
+                calls.append("fetch")
+                raise RuntimeError("market data unavailable")
+
+            with patch("gold_signal.service.maybe_send_daily_quota_warning", side_effect=warning), \
+                 patch("gold_signal.service.fetch_closed_candles", side_effect=fetch):
+                with self.assertRaisesRegex(RuntimeError, "market data unavailable"):
+                    run_once(config)
+            self.assertEqual(calls, ["warning", "fetch"])
 
     def test_failed_daily_usage_check_is_not_repeated_each_poll_cycle(self):
         with TemporaryDirectory() as folder:

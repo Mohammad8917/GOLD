@@ -15,6 +15,7 @@ from .state import (
     process_lock, read_outbox, read_state, write_outbox, write_state,
 )
 from .telegram import format_expiry, format_signal, send_telegram
+from .lifecycle import detect_lifecycle_events, format_lifecycle_notice
 from .quota_warning import maybe_send_daily_quota_warning
 
 LOG = logging.getLogger("gold_signal_bot")
@@ -84,6 +85,22 @@ def _recover_startup_sending(outbox: dict[str, dict], state_path) -> None:
             changed = True
             LOG.error("Startup recovery: expiry notice for signal %s was ambiguous; retrying visibly", key)
 
+        lifecycle_notice = record.get("lifecycle_notice")
+        if isinstance(lifecycle_notice, dict) and lifecycle_notice.get("status") == "SENDING":
+            lifecycle_notice["status"] = "UNKNOWN"
+            lifecycle_notice["updated_at"] = now
+            lifecycle_notice["error"] = (
+                lifecycle_notice.get("error")
+                or "Process stopped while lifecycle notice was marked SENDING; Telegram outcome is unknown"
+            )
+            record["lifecycle_notice"] = lifecycle_notice
+            record.setdefault("recovery_history", []).append({
+                "at": now, "from": "LIFECYCLE_SENDING", "to": "LIFECYCLE_UNKNOWN",
+                "decision": "startup recovery; retry lifecycle notice with [RECOVERY RETRY]",
+            })
+            changed = True
+            LOG.error("Startup recovery: lifecycle notice for signal %s was ambiguous; retrying visibly", key)
+
         outbox[key] = record
     if changed:
         write_outbox(state_path, outbox)
@@ -95,7 +112,7 @@ def _trim_sent_history(outbox: dict[str, dict], limit: int = 1000) -> None:
         (
             (record.get("updated_at", ""), key)
             for key, record in outbox.items()
-            if record.get("status") == "SENT" and record.get("lifecycle_status") == "EXPIRED"
+            if record.get("status") == "SENT" and record.get("lifecycle_status") in {"EXPIRED", "TP2_COMPLETE", "SL_CLOSED"}
         )
     )
     for _, key in sent[:-limit]:
@@ -117,7 +134,7 @@ def _process_due_expirations(
         ttl_candles = default_signal_ttl_candles(config.timeframe)
 
     for key, record in list(outbox.items()):
-        if record.get("status") != "SENT" or record.get("lifecycle_status") == "EXPIRED":
+        if record.get("status") != "SENT" or record.get("lifecycle_status") in {"EXPIRED", "TP2_COMPLETE", "SL_CLOSED"}:
             continue
         raw_stamp = record.get("signal_timestamp")
         if not raw_stamp:
@@ -236,6 +253,178 @@ def _process_due_expirations(
     return sent_count
 
 
+
+def _process_due_lifecycle(
+    config: Config, candles: list[dict], outbox: dict[str, dict],
+    current_index: int, session: requests.Session | None,
+    *, index_by_time: dict | None = None,
+) -> int:
+    """Detect and durably notify TP1/TP2/SL events from completed OHLC candles."""
+    if index_by_time is None:
+        index_by_time = {bar["time"]: index for index, bar in enumerate(candles)}
+    ttl_candles = getattr(config, "signal_ttl_candles", None)
+    if ttl_candles is None:
+        ttl_candles = default_signal_ttl_candles(config.timeframe)
+    delivered = 0
+
+    for key, record in list(outbox.items()):
+        if record.get("status") != "SENT":
+            continue
+        if record.get("lifecycle_status") in {"EXPIRED", "TP2_COMPLETE", "SL_CLOSED"}:
+            continue
+
+        raw_signal_time = record.get("signal_timestamp")
+        if not raw_signal_time:
+            continue
+        signal_time = parse_bar_time(raw_signal_time)
+        signal_index = index_by_time.get(signal_time)
+        if signal_index is None:
+            if signal_time < candles[0]["time"]:
+                raise RuntimeError(
+                    f"Cannot evaluate lifecycle for active signal {key}: its signal candle "
+                    "is older than retained market history; refusing silent completion."
+                )
+            raise RuntimeError(f"Cannot locate signal candle for lifecycle evaluation: {key}")
+
+        last_checked_raw = record.get("lifecycle_last_checked_candle") or raw_signal_time
+        last_checked_time = parse_bar_time(last_checked_raw)
+        last_checked_index = index_by_time.get(last_checked_time)
+        if last_checked_index is None:
+            if last_checked_time < candles[0]["time"]:
+                raise RuntimeError(
+                    f"Cannot resume lifecycle for signal {key}: last checked candle "
+                    "is older than retained market history."
+                )
+            raise RuntimeError(f"Cannot locate last lifecycle candle for signal {key}")
+
+        pending = record.setdefault("pending_lifecycle_events", [])
+        if not isinstance(pending, list):
+            raise RuntimeError(f"Invalid lifecycle event queue for signal {key}")
+
+        if not pending:
+            expiry_index = signal_index + ttl_candles
+            scan_end = min(current_index, expiry_index)
+            if scan_end > last_checked_index:
+                found_events = False
+                for index in range(last_checked_index + 1, scan_end + 1):
+                    candle = candles[index]
+                    events = detect_lifecycle_events(record, candle)
+                    record["lifecycle_last_checked_candle"] = candle["time"].isoformat()
+                    if events:
+                        for event in events:
+                            pending.append({
+                                "event": event,
+                                "candle_time": candle["time"].isoformat(),
+                                "message": format_lifecycle_notice(record, event, candle["time"]),
+                            })
+                        found_events = True
+                        break
+                if not found_events:
+                    record["lifecycle_last_checked_candle"] = candles[scan_end]["time"].isoformat()
+                outbox[key] = record
+                write_outbox(config.state_file, outbox)
+
+        while pending:
+            event_record = pending[0]
+            event = event_record.get("event")
+            notice = record.get("lifecycle_notice")
+            if notice is not None and (
+                not isinstance(notice, dict) or notice.get("event") != event
+            ):
+                raise RuntimeError(f"Lifecycle WAL event mismatch for signal {key}")
+
+            notice_status = notice.get("status") if isinstance(notice, dict) else "PENDING"
+            if notice_status == "SENDING":
+                raise RuntimeError(
+                    f"WAL invariant violation: lifecycle notice for signal {key} "
+                    "is SENDING outside startup recovery"
+                )
+            recovery = notice_status == "UNKNOWN"
+            message = str(event_record["message"])
+            if recovery:
+                message = "<b>[RECOVERY RETRY]</b>\\n" + message
+
+            notice = {
+                "event": event,
+                "candle_time": event_record["candle_time"],
+                "status": "SENDING",
+                "attempt_count": int((notice or {}).get("attempt_count", 0)) + 1,
+                "message": str(event_record["message"]),
+                "message_id": None,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "error": None,
+            }
+            record["lifecycle_notice"] = notice
+            outbox[key] = record
+            write_outbox(config.state_file, outbox)
+
+            try:
+                message_id = send_telegram(config, message, session=session)
+            except Exception as exc:
+                status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                definitive_rejection = (
+                    isinstance(exc, RuntimeError) and str(exc).startswith("Telegram rejected")
+                ) or (
+                    isinstance(exc, requests.HTTPError)
+                    and isinstance(status_code, int) and 400 <= status_code < 500
+                )
+                notice["status"] = "FAILED" if definitive_rejection else "UNKNOWN"
+                notice["error"] = _redact_error(exc, config)
+                notice["updated_at"] = datetime.now(timezone.utc).isoformat()
+                record["lifecycle_notice"] = notice
+                _append_error_history(
+                    record, signal_id=key, error=notice["error"], at=notice["updated_at"],
+                )
+                outbox[key] = record
+                write_outbox(config.state_file, outbox)
+                raise
+
+            if type(message_id) is not int or message_id <= 0:
+                notice["status"] = "UNKNOWN"
+                notice["error"] = "Lifecycle send succeeded without a valid Telegram message_id"
+                notice["updated_at"] = datetime.now(timezone.utc).isoformat()
+                record["lifecycle_notice"] = notice
+                outbox[key] = record
+                write_outbox(config.state_file, outbox)
+                raise RuntimeError(
+                    f"Lifecycle notice for signal {key} has UNKNOWN delivery outcome; "
+                    "it will retry with [RECOVERY RETRY]"
+                )
+
+            notice["status"] = "SENT"
+            notice["message_id"] = message_id
+            notice["updated_at"] = datetime.now(timezone.utc).isoformat()
+            history = record.setdefault("lifecycle_event_history", [])
+            history.append({
+                "event": event,
+                "candle_time": event_record["candle_time"],
+                "message_id": message_id,
+                "sent_at": notice["updated_at"],
+            })
+            record["lifecycle_event_history"] = history[-10:]
+            pending.pop(0)
+            record["lifecycle_notice"] = None
+            record["lifecycle_last_checked_candle"] = event_record["candle_time"]
+            if event == "TP1":
+                record["tp1_hit"] = True
+                record["lifecycle_status"] = "TP1_HIT"
+            elif event == "TP2":
+                record["lifecycle_status"] = "TP2_COMPLETE"
+                pending.clear()
+            elif event == "SL":
+                record["lifecycle_status"] = "SL_CLOSED"
+                pending.clear()
+            outbox[key] = record
+            _trim_sent_history(outbox)
+            write_outbox(config.state_file, outbox)
+            delivered += 1
+            LOG.info(
+                "Delivered %s lifecycle notice for signal %s (Telegram message_id=%s)",
+                event, key, message_id,
+            )
+
+    return delivered
+
 def run_once(config: Config, session: requests.Session | None = None) -> str:
     """Process new closed candles; WAL recovery prefers a visible duplicate to a lost signal.
 
@@ -244,13 +433,14 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
     an explicit [RECOVERY RETRY] marker. Exactly-once delivery is not claimed.
     """
     with process_lock(config.state_file):
-        candles = fetch_closed_candles(config, session=session)
-        # A once-daily usage check is independent of signal generation. If the
-        # usage endpoint or Telegram warning fails, keep processing market data.
+        # Check the once-daily quota warning before fetching candles. This way
+        # the warning can still be sent when the next market-data request is
+        # rejected because the daily quota has just been exhausted.
         try:
             maybe_send_daily_quota_warning(config, session=session)
         except Exception as exc:
             LOG.warning("Daily quota warning check/delivery unavailable: %s", _redact_error(exc, config))
+        candles = fetch_closed_candles(config, session=session)
         if len(candles) < 60:
             raise RuntimeError("Insufficient candle history for signal evaluation")
 
@@ -282,10 +472,16 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
                 len(candles),
             )
         if start_index >= len(candles):
+            lifecycle_delivered = _process_due_lifecycle(
+                config, candles, outbox, len(candles) - 1, session,
+                index_by_time=candle_index_by_time,
+            )
             expiry_delivered = _process_due_expirations(
                 config, candles, outbox, len(candles) - 1, session,
                 index_by_time=candle_index_by_time,
             )
+            if lifecycle_delivered:
+                return "lifecycle_updated"
             if expiry_delivered:
                 return "expired"
             LOG.info("No new confirmed GOLD signal on %s", config.timeframe)
@@ -311,6 +507,10 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
         processed = 0
         for index in range(start_index, len(candles)):
             stamp = candles[index]["time"]
+            delivered += _process_due_lifecycle(
+                config, candles, outbox, index, session,
+                index_by_time=candle_index_by_time,
+            )
             delivered += _process_due_expirations(
                 config, candles, outbox, index, session,
                 index_by_time=candle_index_by_time,
@@ -350,6 +550,11 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
                         "take_profit_1": float(data["take_profit_1"]) if data.get("take_profit_1") is not None else None,
                         "take_profit_2": float(data["take_profit_2"]) if data.get("take_profit_2") is not None else None,
                         "lifecycle_status": "ACTIVE",
+                        "lifecycle_last_checked_candle": stamp.isoformat(),
+                        "tp1_hit": False,
+                        "pending_lifecycle_events": [],
+                        "lifecycle_notice": None,
+                        "lifecycle_event_history": [],
                         "last_error": None,
                         "error_history": [],
                         "recovery_history": [],
