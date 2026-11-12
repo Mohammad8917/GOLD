@@ -241,6 +241,8 @@ class QuotaManagementTests(unittest.TestCase):
             )
         self.assertEqual(raised.exception.window, "daily")
         self.assertEqual(session.get.call_count, 2)
+        limited.close.assert_called_once()
+        usage.close.assert_called_once()
 
 if __name__ == "__main__":
     unittest.main()

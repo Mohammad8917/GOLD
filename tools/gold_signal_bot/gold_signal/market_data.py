@@ -100,8 +100,14 @@ def _get_with_retry(client: requests.Session, url: str, *, params: dict[str, Any
         try:
             response = client.get(url, params=params, timeout=timeout)
             if response.status_code == 401 and url == TWELVE_DATA_URL:
+                close = getattr(response, "close", None)
+                if callable(close):
+                    close()
                 raise RuntimeError("Twelve Data API key is invalid or missing (HTTP 401); replace the key")
             if response.status_code == 403 and url == TWELVE_DATA_URL:
+                close = getattr(response, "close", None)
+                if callable(close):
+                    close()
                 raise RuntimeError("Twelve Data access is forbidden (HTTP 403); check symbol and plan permissions")
             if response.status_code == 429 and url == TWELVE_DATA_URL:
                 retry_after = response.headers.get("Retry-After")
