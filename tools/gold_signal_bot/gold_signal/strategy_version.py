@@ -42,7 +42,7 @@ def strategy_source_hash(sources: Mapping[str, str]) -> str:
     digest = hashlib.sha256()
     for filename in sorted(sources):
         digest.update(filename.encode("utf-8"))
-        digest.update(b"\\0")
+        digest.update(b"\0")
         tokens = tokenize.generate_tokens(io.StringIO(sources[filename]).readline)
         for token in tokens:
             token_name = tokenize.tok_name[token.type]
@@ -54,8 +54,8 @@ def strategy_source_hash(sources: Mapping[str, str]) -> str:
             digest.update(str(len(value)).encode("ascii"))
             digest.update(b":")
             digest.update(value.encode("utf-8"))
-            digest.update(b"\\0")
-        digest.update(b"\\0")
+            digest.update(b"\0")
+        digest.update(b"\0")
     return "sha256:" + digest.hexdigest()
 
 
