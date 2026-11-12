@@ -52,7 +52,7 @@ class TelegramSignalExpiryTests(unittest.TestCase):
             first = self.candles(201)
             signal = self.signal(first[-1]["time"])
             with patch("gold_signal.service.fetch_closed_candles", return_value=first), \
-                 patch("gold_signal.service.detect_signals", return_value=[signal]),
+                 patch("gold_signal.service.detect_signals", return_value=[signal]), \\
                  patch("gold_signal.service._signal_is_fresh", return_value=True), \
                  patch("gold_signal.service.format_signal", return_value="initial signal"), \
                  patch("gold_signal.service.send_telegram", return_value=101):
