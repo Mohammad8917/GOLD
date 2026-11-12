@@ -8,13 +8,13 @@ param(
 
     [int]$ProcessId = 0,
 
-    [string]$StateFile = (Join-Path $HOME ".quantdinger_gold_signal_state.json")
+    [string]$StateFile = ""
 )
 
 $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
-$StateFile = [System.IO.Path]::GetFullPath($StateFile)
+$script:ConfiguredStateFile = $env:GOLD_SIGNAL_STATE_FILE
 
 $script:TelegramBotToken = $env:GOLD_TELEGRAM_BOT_TOKEN
 $script:TelegramChatId = $env:GOLD_TELEGRAM_CHAT_ID
@@ -27,8 +27,24 @@ if (Test-Path -LiteralPath $envFile) {
         elseif ($line -match '^\s*GOLD_TELEGRAM_CHAT_ID\s*=\s*(.*?)\s*$') {
             if (-not $script:TelegramChatId) { $script:TelegramChatId = $Matches[1].Trim().Trim('"').Trim("'") }
         }
+        elseif ($line -match '^\s*GOLD_SIGNAL_STATE_FILE\s*=\s*(.*?)\s*$') {
+            if (-not $script:ConfiguredStateFile) { $script:ConfiguredStateFile = $Matches[1].Trim().Trim('"').Trim("'") }
+        }
     }
 }
+
+if (-not $StateFile) {
+    if ($script:ConfiguredStateFile) {
+        $StateFile = $script:ConfiguredStateFile
+    }
+    else {
+        $StateFile = Join-Path $HOME ".quantdinger_gold_signal_state.json"
+    }
+}
+if (-not [System.IO.Path]::IsPathRooted($StateFile)) {
+    $StateFile = Join-Path $repoRoot $StateFile
+}
+$StateFile = [System.IO.Path]::GetFullPath($StateFile)
 
 function Send-WatchdogTelegramAlert {
     param([Parameter(Mandatory = $true)][string]$Message)
