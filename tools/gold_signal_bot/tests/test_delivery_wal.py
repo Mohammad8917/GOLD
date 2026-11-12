@@ -210,6 +210,30 @@ class DeliveryWalTests(unittest.TestCase):
         self.assertEqual(read_state(self.state_path), self.candles[-1]["time"].isoformat())
         self.assertEqual(read_outbox(self.state_path)[key]["status"], "SENT")
 
+    def test_telegram_http_429_is_retryable_and_not_a_busy_loop(self):
+        response = SimpleNamespace(status_code=429)
+        error = requests.HTTPError("Telegram rate limited", response=response)
+        with self.run_with_signal(), patch(
+            "gold_signal.service.send_telegram", new=mock_send_fail(error),
+        ) as sender:
+            with self.assertRaises(requests.HTTPError):
+                run_once(self.config)
+            sender.assert_called_once()
+
+        key = signal_key(self.signal)
+        record = read_outbox(self.state_path)[key]
+        self.assertEqual(record["status"], "UNKNOWN")
+        self.assertEqual(record["attempt_count"], 1)
+        self.assertEqual(read_state(self.state_path), "")
+
+        with self.run_with_signal(), patch(
+            "gold_signal.service.send_telegram", new=mock_send_success(994),
+        ) as sender:
+            self.assertEqual(run_once(self.config), "sent")
+        self.assertEqual(sender.call_count, 1)
+        self.assertTrue(sender.call_args.args[1].startswith("<b>[RECOVERY RETRY]</b>"))
+        self.assertEqual(read_outbox(self.state_path)[key]["status"], "SENT")
+
     def test_definitive_telegram_rejection_is_not_misclassified_as_unknown(self):
         response = SimpleNamespace(status_code=400)
         error = requests.HTTPError("bad request", response=response)

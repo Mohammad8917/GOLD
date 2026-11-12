@@ -59,19 +59,24 @@ def inspect_api_usage(
         params={"apikey": api_key, "format": "JSON", "timezone": "UTC"},
         timeout=timeout,
     )
-    if response.status_code == 401:
-        raise RuntimeError("Twelve Data API key is invalid or missing (HTTP 401); replace the key")
-    if response.status_code == 403:
-        raise RuntimeError("Twelve Data access is forbidden (HTTP 403); check symbol and plan permissions")
-    if response.status_code != 200:
-        return None
     try:
-        payload = response.json()
-    except ValueError:
-        return None
-    if not isinstance(payload, dict) or payload.get("status") == "error":
-        return None
-    return payload
+        if response.status_code == 401:
+            raise RuntimeError("Twelve Data API key is invalid or missing (HTTP 401); replace the key")
+        if response.status_code == 403:
+            raise RuntimeError("Twelve Data access is forbidden (HTTP 403); check symbol and plan permissions")
+        if response.status_code != 200:
+            return None
+        try:
+            payload = response.json()
+        except ValueError:
+            return None
+        if not isinstance(payload, dict) or payload.get("status") == "error":
+            return None
+        return payload
+    finally:
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
 
 
 def quota_error(

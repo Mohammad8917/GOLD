@@ -164,6 +164,51 @@ class LiveMarketDataErrorRedactionTests(unittest.TestCase):
         self.assertIn("invalid JSON", str(caught.exception))
         assert_redacted(self, caught.exception)
 
+    def test_fetch_closes_owned_session_and_response_after_provider_error(self):
+        class Response:
+            status_code = 200
+            closed = False
+            def json(self):
+                return {"status": "error", "code": "400", "message": "bad request"}
+            def close(self):
+                self.closed = True
+        class Session:
+            def __init__(self):
+                self.response = Response()
+                self.closed = False
+            def get(self, *_args, **_kwargs):
+                return self.response
+            def close(self):
+                self.closed = True
+        owned = Session()
+        with patch("gold_signal.market_data.requests.Session", return_value=owned):
+            with self.assertRaises(RuntimeError):
+                fetch_closed_candles(config())
+        self.assertTrue(owned.closed)
+        self.assertTrue(owned.response.closed)
+
+    def test_fetch_closes_response_but_preserves_caller_owned_session(self):
+        class Response:
+            status_code = 200
+            closed = False
+            def json(self):
+                return {"status": "error", "code": "400", "message": "bad request"}
+            def close(self):
+                self.closed = True
+        class Session:
+            closed = False
+            def __init__(self):
+                self.response = Response()
+            def get(self, *_args, **_kwargs):
+                return self.response
+            def close(self):
+                self.closed = True
+        session = Session()
+        with self.assertRaises(RuntimeError):
+            fetch_closed_candles(config(), session)
+        self.assertTrue(session.response.closed)
+        self.assertFalse(session.closed)
+
     def test_fetch_session_get_parameters_match_expected_live_request(self) -> None:
         class Response:
             status_code = 200

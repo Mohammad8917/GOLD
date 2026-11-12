@@ -55,26 +55,36 @@ def send_telegram(
     The caller owns retry policy because a timeout can occur after Telegram has
     accepted the message. Blind POST retries here could create silent duplicates.
     """
+    owns_session = session is None
     client = session or requests.Session()
-    response = client.post(
-        TELEGRAM_URL.format(token=config.bot_token),
-        data={
-            "chat_id": config.chat_id,
-            "text": message,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": "true",
-        },
-        timeout=config.http_timeout,
-    )
-    response.raise_for_status()
-    result = response.json()
-    if not isinstance(result, dict) or not result.get("ok"):
-        raise RuntimeError(
-            "Telegram rejected the message; check bot token, chat ID, and bot permissions"
+    try:
+        response = client.post(
+            TELEGRAM_URL.format(token=config.bot_token),
+            data={
+                "chat_id": config.chat_id,
+                "text": message,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": "true",
+            },
+            timeout=config.http_timeout,
         )
-    payload = result.get("result")
-    if isinstance(payload, dict):
-        message_id = payload.get("message_id")
-        if isinstance(message_id, int):
-            return message_id
-    return None
+        try:
+            response.raise_for_status()
+            result = response.json()
+            if not isinstance(result, dict) or not result.get("ok"):
+                raise RuntimeError(
+                    "Telegram rejected the message; check bot token, chat ID, and bot permissions"
+                )
+            payload = result.get("result")
+            if isinstance(payload, dict):
+                message_id = payload.get("message_id")
+                if isinstance(message_id, int):
+                    return message_id
+            return None
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
+    finally:
+        if owns_session:
+            client.close()

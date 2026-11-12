@@ -111,9 +111,9 @@ MUTATIONS = [
     {
         "label": "failed daily usage check repeats on every poll cycle",
         "path": "gold_signal/quota_warning.py",
-        "old": "        _write_state(path, state)\n        client = session or requests.Session()",
-        "new": "        client = session or requests.Session()",
-        "test": "tests.test_quota_management.QuotaManagementTests.test_failed_daily_usage_check_is_not_repeated_each_poll_cycle",
+        "old": "        try:\n            usage = inspect_api_usage",
+        "new": "        state[\"last_usage_check_date\"] = today\n        _write_state(path, state)\n        try:\n            usage = inspect_api_usage",
+        "test": "tests.test_quota_management.QuotaManagementTests.test_failed_daily_usage_check_is_retried_on_next_poll_cycle",
     },
     {
         "label": "exchange order execution call introduced",
