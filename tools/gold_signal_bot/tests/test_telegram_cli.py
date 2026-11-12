@@ -5,10 +5,11 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from gold_signal.cli import main, _run_current_candle_with_retry
 from gold_signal.config import Config
+from gold_signal.telegram import send_telegram
 
 
 class TelegramCliTests(unittest.TestCase):
@@ -61,6 +62,21 @@ class TelegramCliTests(unittest.TestCase):
         self.assertEqual(result, "no_signal")
         self.assertEqual(run.call_count, 5)
         self.assertTrue(all(call.args[0].retry_attempts == 1 for call in run.call_args_list))
+
+    def test_heartbeat_transport_sets_telegram_silent_flag(self):
+        config = SimpleNamespace(bot_token="test-token", chat_id="test-chat", http_timeout=5)
+        response = Mock()
+        response.json.return_value = {"ok": True, "result": {"message_id": 123}}
+        session = Mock()
+        session.post.return_value = response
+
+        message_id = send_telegram(
+            config, "heartbeat", session=session, disable_notification=True
+        )
+
+        self.assertEqual(message_id, 123)
+        payload = session.post.call_args.kwargs["data"]
+        self.assertEqual(payload["disable_notification"], "true")
 
     def test_connectivity_test_requires_positive_telegram_message_id(self):
         self.assertEqual(self.run_test_command(12345), 0)
