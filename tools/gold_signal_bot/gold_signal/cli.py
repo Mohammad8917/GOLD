@@ -5,13 +5,14 @@ import argparse
 import logging
 import os
 import signal
-import time
+import threading
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
 
 from .config import Config
+from .quota import QuotaLimitError
 from .service import run_once
 from .telegram import send_telegram
 
@@ -54,23 +55,27 @@ def main() -> int:
         except Exception as exc:
             LOG.error("GOLD check failed: %s", _redact(exc, config))
             return 1
-    stopping = False
+    stop_event = threading.Event()
     def stop_handler(_signum: int, _frame: Any) -> None:
-        nonlocal stopping
-        stopping = True
+        stop_event.set()
         LOG.info("Stop requested")
     signal.signal(signal.SIGINT, stop_handler)
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, stop_handler)
     LOG.info("GOLD notifier started: XAU/USD, timeframe=%s, poll=%ss; signal-only mode",
              config.timeframe, config.poll_seconds)
-    while not stopping:
+    while not stop_event.is_set():
+        wait_seconds = config.poll_seconds
         try:
             run_once(config)
+        except QuotaLimitError as exc:
+            wait_seconds = int(exc.retry_after) + 1
+            LOG.warning(
+                "Market-data polling paused for %s quota window; retry in about %s seconds",
+                exc.window, wait_seconds,
+            )
         except Exception as exc:
             LOG.error("GOLD check failed; will retry next cycle: %s", _redact(exc, config))
-        for _ in range(config.poll_seconds):
-            if stopping:
-                break
-            time.sleep(1)
+        # Event.wait sleeps once without polling and wakes immediately on SIGINT/SIGTERM.
+        stop_event.wait(wait_seconds)
     return 0

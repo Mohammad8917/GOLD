@@ -15,6 +15,7 @@ from .state import (
     process_lock, read_outbox, read_state, write_outbox, write_state,
 )
 from .telegram import format_expiry, format_signal, send_telegram
+from .quota_warning import maybe_send_daily_quota_warning
 
 LOG = logging.getLogger("gold_signal_bot")
 
@@ -29,7 +30,7 @@ def _signal_id(signal: dict, timeframe: str) -> str:
 
 def _redact_error(error: Exception, config: Config) -> str:
     value = str(error)
-    for secret in (config.api_key, config.bot_token):
+    for secret in (getattr(config, "api_key", ""), getattr(config, "bot_token", "")):
         if secret:
             value = value.replace(secret, "[REDACTED]")
     return value[:500]
@@ -244,6 +245,12 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
     """
     with process_lock(config.state_file):
         candles = fetch_closed_candles(config, session=session)
+        # A once-daily usage check is independent of signal generation. If the
+        # usage endpoint or Telegram warning fails, keep processing market data.
+        try:
+            maybe_send_daily_quota_warning(config, session=session)
+        except Exception as exc:
+            LOG.warning("Daily quota warning check/delivery unavailable: %s", _redact_error(exc, config))
         if len(candles) < 60:
             raise RuntimeError("Insufficient candle history for signal evaluation")
 

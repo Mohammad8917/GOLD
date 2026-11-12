@@ -95,6 +95,27 @@ MUTATIONS = [
         "test": "test_gold_signal_bot.CandleValidationTests.test_rejects_stale_data_during_open_session",
     },
     {
+        "label": "daily quota near-limit boundary misclassified as minute",
+        "path": "gold_signal/quota.py",
+        "old": "daily_used >= daily_threshold",
+        "new": "daily_used > daily_threshold",
+        "test": "tests.test_quota_management.QuotaManagementTests.test_daily_usage_near_95_percent_threshold_is_classified_as_daily",
+    },
+    {
+        "label": "pre-emptive quota warning threshold raised above 80 percent",
+        "path": "gold_signal/quota_warning.py",
+        "old": "used / limit >= DAILY_WARNING_RATIO",
+        "new": "used / limit > DAILY_WARNING_RATIO",
+        "test": "tests.test_quota_management.QuotaManagementTests.test_daily_warning_at_80_percent_is_sent_only_once_per_utc_day",
+    },
+    {
+        "label": "failed daily usage check repeats on every poll cycle",
+        "path": "gold_signal/quota_warning.py",
+        "old": "        _write_state(path, state)\n        client = session or requests.Session()",
+        "new": "        client = session or requests.Session()",
+        "test": "tests.test_quota_management.QuotaManagementTests.test_failed_daily_usage_check_is_not_repeated_each_poll_cycle",
+    },
+    {
         "label": "Retry-After ignored",
         "path": "gold_signal/market_data.py",
         "old": "delay = min(30.0, max(0.0, float(retry_after)))",
@@ -126,6 +147,7 @@ def isolated_copy(destination: Path) -> None:
     shutil.copy2(ROOT / "gold_signal_bot.py", destination / "gold_signal_bot.py")
     for test_file in ROOT.glob("test_*.py"):
         shutil.copy2(test_file, destination / test_file.name)
+    shutil.copytree(ROOT / "tests", destination / "tests")
 
 
 def run_mutation(mutation: dict[str, str]) -> bool:
