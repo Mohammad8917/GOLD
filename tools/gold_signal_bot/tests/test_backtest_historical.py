@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sys
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -11,7 +11,7 @@ from backtest_historical import (  # noqa: E402
     evaluate_chronological_holdout, monte_carlo_risk_metrics,
     select_test_window_signals, simulate,
     validate_history_continuity,
-    validate_test_window_coverage,
+    validate_test_window_coverage, fetch_history,
 )
 
 
@@ -29,6 +29,48 @@ def signal(index: int = 0) -> dict:
         "side": "BUY", "entry": 100.0, "stop": 90.0,
         "tp1": 110.0, "tp2": 120.0, "risk": 10.0,
     }
+
+
+
+class HistoricalRequestSecretRedactionTests(unittest.TestCase):
+    def test_http_error_does_not_expose_api_key_or_request_url(self) -> None:
+        class Response:
+            status_code = 403
+
+        class Session:
+            def get(self, *_args, **_kwargs):
+                return Response()
+
+        with self.assertRaises(RuntimeError) as caught:
+            fetch_history(
+                "SENSITIVE_TEST_KEY", "15min",
+                date(2026, 1, 1), date(2026, 1, 2), Session(),
+            )
+        message = str(caught.exception)
+        self.assertIn("HTTP 403", message)
+        self.assertNotIn("SENSITIVE_TEST_KEY", message)
+        self.assertNotIn("apikey", message)
+        self.assertNotIn("https://", message)
+
+    def test_network_error_does_not_expose_api_key_or_request_url(self) -> None:
+        import requests
+
+        class Session:
+            def get(self, *_args, **_kwargs):
+                raise requests.Timeout(
+                    "timed out for https://api.twelvedata.com/time_series?apikey=SENSITIVE_TEST_KEY"
+                )
+
+        with self.assertRaises(RuntimeError) as caught:
+            fetch_history(
+                "SENSITIVE_TEST_KEY", "15min",
+                date(2026, 1, 1), date(2026, 1, 2), Session(),
+            )
+        message = str(caught.exception)
+        self.assertIn("Timeout", message)
+        self.assertNotIn("SENSITIVE_TEST_KEY", message)
+        self.assertNotIn("apikey", message)
+        self.assertNotIn("https://", message)
 
 
 class HistoricalBacktestExecutionTests(unittest.TestCase):
