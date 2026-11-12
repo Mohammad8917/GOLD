@@ -104,18 +104,15 @@ def _get_with_retry(client: requests.Session, url: str, *, params: dict[str, Any
             if response.status_code == 403 and url == TWELVE_DATA_URL:
                 raise RuntimeError("Twelve Data access is forbidden (HTTP 403); check symbol and plan permissions")
             if response.status_code == 429 and url == TWELVE_DATA_URL:
-                try:
-                    error_payload = response.json()
-                except ValueError:
-                    error_payload = {}
-                message = str(error_payload.get("message", "")) if isinstance(error_payload, dict) else ""
                 raise quota_error(
                     client, api_key=str(params.get("apikey", "")), timeout=timeout,
-                    message=message, retry_after=response.headers.get("Retry-After"),
+                    retry_after=response.headers.get("Retry-After"),
                 )
             if response.status_code in (408, 425, 429) or response.status_code >= 500:
                 if attempt + 1 == attempts:
-                    response.raise_for_status()
+                    raise RuntimeError(
+                        f"Market-data request failed (HTTP {response.status_code})"
+                    )
                 retry_after = response.headers.get("Retry-After", "")
                 try:
                     delay = min(30.0, max(0.0, float(retry_after)))
@@ -123,15 +120,18 @@ def _get_with_retry(client: requests.Session, url: str, *, params: dict[str, Any
                     delay = min(30.0, base_delay * (2 ** attempt))
                 time.sleep(delay)
                 continue
-            response.raise_for_status()
+            if response.status_code >= 400:
+                raise RuntimeError(
+                    f"Market-data request failed (HTTP {response.status_code})"
+                )
             return response
         except (requests.Timeout, requests.ConnectionError) as exc:
-            last_error = exc
+            last_error = type(exc).__name__
             if attempt + 1 == attempts:
-                raise
+                break
             time.sleep(min(30.0, base_delay * (2 ** attempt)))
     if last_error:
-        raise last_error
+        raise RuntimeError(f"Market-data request failed ({last_error})")
     raise RuntimeError("Market-data request failed after retries")
 
 def fetch_closed_candles(config: Config, session: requests.Session | None = None) -> list[dict[str, Any]]:
@@ -157,11 +157,10 @@ def fetch_closed_candles(config: Config, session: requests.Session | None = None
         if error_code == "429":
             raise quota_error(
                 client, api_key=config.api_key, timeout=config.http_timeout,
-                message=message,
             )
-        if "rate" in message.lower():
-            raise RuntimeError("Twelve Data rate limit error without HTTP/code 429")
-        raise RuntimeError(f"Twelve Data error: {message[:250]}")
+        if error_code:
+            raise RuntimeError(f"Twelve Data returned an error (code {error_code[:20]})")
+        raise RuntimeError("Twelve Data returned an error response")
     values = payload.get("values")
     if not isinstance(values, list) or not values:
         raise RuntimeError("Twelve Data returned no XAU/USD candles")
