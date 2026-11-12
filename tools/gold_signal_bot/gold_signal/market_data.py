@@ -156,7 +156,6 @@ def fetch_closed_candles(config: Config, session: requests.Session | None = None
         raise RuntimeError("Twelve Data returned an unexpected response")
     if payload.get("status") == "error" or payload.get("code"):
         error_code = str(payload.get("code") or "")
-        message = str(payload.get("message") or error_code or "unknown provider error")
         if error_code == "401":
             raise RuntimeError("Twelve Data authentication failed (code 401); verify the API key")
         if error_code == "403":
