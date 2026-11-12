@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="title desc">
+<title id="title">GOLD signal-only workflow</title><desc id="desc">Twelve Data market candles flow to GOLD analysis, then Telegram notifications. No exchange connection or order execution.</desc>
+<rect width="1200" height="360" rx="24" fill="#101827"/>
+<text x="600" y="48" fill="#f8fafc" font-family="Arial,sans-serif" font-size="27" font-weight="bold" text-anchor="middle">GOLD | گردش‌کار سیگنال‌دهی فقط برای تلگرام</text>
+<g font-family="Arial,sans-serif" text-anchor="middle">
+<rect x="55" y="105" width="245" height="145" rx="18" fill="#1e3a5f" stroke="#60a5fa" stroke-width="2"/>
+<text x="177" y="151" fill="#bfdbfe" font-size="23" font-weight="bold">Twelve Data</text><text x="177" y="188" fill="#fff" font-size="19">داده کندل XAU/USD</text><text x="177" y="219" fill="#cbd5e1" font-size="16">فقط داده بازار</text>
+<path d="M310 178 H390" stroke="#94a3b8" stroke-width="5" fill="none"/><path d="M377 165 L392 178 L377 191" stroke="#94a3b8" stroke-width="5" fill="none"/>
+<rect x="405" y="105" width="360" height="145" rx="18" fill="#164e3a" stroke="#4ade80" stroke-width="2"/>
+<text x="585" y="151" fill="#bbf7d0" font-size="23" font-weight="bold">GOLD Analysis</text><text x="585" y="188" fill="#fff" font-size="19">EMA • RSI • ATR</text><text x="585" y="219" fill="#d1fae5" font-size="16">تولید Entry / SL / TP فرضی</text>
+<path d="M775 178 H855" stroke="#94a3b8" stroke-width="5" fill="none"/><path d="M842 165 L857 178 L842 191" stroke="#94a3b8" stroke-width="5" fill="none"/>
+<rect x="870" y="105" width="275" height="145" rx="18" fill="#4a2b65" stroke="#c084fc" stroke-width="2"/>
+<text x="1007" y="151" fill="#e9d5ff" font-size="23" font-weight="bold">Telegram</text><text x="1007" y="188" fill="#fff" font-size="19">ارسال هشدار</text><text x="1007" y="219" fill="#e9d5ff" font-size="16">پیام تحلیلی</text>
+<text x="600" y="303" fill="#fca5a5" font-size="21" font-weight="bold">بدون اتصال صرافی • بدون API معاملاتی • بدون ثبت یا اجرای سفارش</text>
+</g></svg>
