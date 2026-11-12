@@ -16,7 +16,7 @@ The work is intentionally stacked so each stage can be reviewed independently:
 3. PR #9 — feature/telegram-signal-lifecycle → PR #8 branch
    - TP1/TP2/SL Telegram lifecycle messages, durable recovery, Windows stability monitor, and manual live-validation workflows.
 
-All three PRs have been merged into `main` in dependency order: PR #7 (222eb8b), PR #8 (761c7d4), and PR #9 (23cf967). The current `main` head is `23cf96741829933ef8e542ce9f7894cb70421653`.
+All three PRs have been merged into `main` in dependency order: PR #7 (222eb8b), PR #8 (761c7d4), and PR #9 (23cf967). The merged code passed the post-merge `main` CI run #165; the follow-up release-checklist documentation commit also passed `main` CI run #166.
 
 ## Verified automated checks
 
@@ -24,7 +24,7 @@ All three PRs have been merged into `main` in dependency order: PR #7 (222eb8b),
 |---|---|---:|---:|---|
 | PR #7 | Signal Bot run #134 | 132 | 12/12 killed | WAL crash run #62 passed on Ubuntu + Windows |
 | PR #8 | Signal Bot run #159 | 146 | 15/15 killed | Shared WAL crash coverage from run #62 |
-| PR #9 | Signal Bot run #164 | 159 | 21/21 killed | Shared WAL crash coverage from run #62 |
+| PR #9 | Signal Bot run #164; post-merge main runs #165 and #166 | 159 | 21/21 killed | Shared WAL crash coverage from run #62 |
 
 Tested heads: PR #7 `1b3e176d15752e67c22ac5e066110cb3d6e43def`; PR #8 `249c771d2f61d816c497507718b78f840654e7e4`; PR #9 `5682e1fb90742381e7422f32c41075c69d8a4e8d`. Each signal-test run passed on Ubuntu and Windows with zero surviving mutations. PR #9's Windows PowerShell parser check for stability_monitor.ps1 also passed. Its static safety contract rejects exchange SDK imports, common order-placement calls, exchange API hosts, and any HTTP POST outside the Telegram sender. WAL crash run #62 executed 3 subprocess crash-boundary tests per OS and passed.
 
