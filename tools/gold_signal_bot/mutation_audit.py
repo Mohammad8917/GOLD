@@ -153,8 +153,8 @@ MUTATIONS = [
     {
         "label": "Telegram connectivity test accepts missing message ID",
         "path": "gold_signal/cli.py",
-        "old": "            if type(message_id) is not int or message_id <= 0:\\n                raise RuntimeError(\"Telegram test returned success without a valid message_id\")",
-        "new": "            if False:\\n                raise RuntimeError(\"Telegram test returned success without a valid message_id\")",
+        "old": "            if type(message_id) is not int or message_id <= 0:\n                raise RuntimeError(\"Telegram test returned success without a valid message_id\")",
+        "new": "            if False:\n                raise RuntimeError(\"Telegram test returned success without a valid message_id\")",
         "test": "tests.test_telegram_cli.TelegramCliTests.test_connectivity_test_fails_if_telegram_response_has_no_message_id",
     },
     {
