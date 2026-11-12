@@ -125,9 +125,9 @@ def _get_with_retry(client: requests.Session, url: str, *, params: dict[str, Any
                     f"Market-data request failed (HTTP {response.status_code})"
                 )
             return response
-        except (requests.Timeout, requests.ConnectionError) as exc:
+        except requests.RequestException as exc:
             last_error = type(exc).__name__
-            if attempt + 1 == attempts:
+            if not isinstance(exc, (requests.Timeout, requests.ConnectionError)) or attempt + 1 == attempts:
                 break
             time.sleep(min(30.0, base_delay * (2 ** attempt)))
     if last_error:
@@ -144,7 +144,14 @@ def fetch_closed_candles(config: Config, session: requests.Session | None = None
         timeout=config.http_timeout, attempts=config.retry_attempts,
         base_delay=config.retry_base_seconds,
     )
-    payload = response.json()
+    try:
+        payload = response.json()
+        json_error_type = None
+    except ValueError as exc:
+        json_error_type = type(exc).__name__
+        payload = None
+    if json_error_type:
+        raise RuntimeError(f"Twelve Data returned invalid JSON ({json_error_type})")
     if not isinstance(payload, dict):
         raise RuntimeError("Twelve Data returned an unexpected response")
     if payload.get("status") == "error" or payload.get("code"):
