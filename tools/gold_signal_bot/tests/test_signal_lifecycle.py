@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from gold_signal.config import Config
 from gold_signal.lifecycle import detect_lifecycle_events
-from gold_signal.service import run_once
+from gold_signal.service import _signal_id, run_once
 from gold_signal.state import read_outbox, write_outbox, write_state
 
 
@@ -242,6 +242,49 @@ class SignalLifecycleTests(unittest.TestCase):
             ):
                 run_once(config)
             self.assertEqual(restart_sender.call_count, 0)
+
+    def test_stale_signal_with_unknown_delivery_status_never_uses_trade_recovery_path(self):
+        with tempfile.TemporaryDirectory() as folder:
+            config = self.make_config(folder)
+            candles = self.candles(202)
+            stale_data = self.signal(candles[201]["time"])
+            write_state(config.state_file, candles[200]["time"])
+            signal_id = _signal_id(stale_data, config.timeframe)
+            write_outbox(config.state_file, {
+                signal_id: {
+                    "signal_id": signal_id,
+                    "signal_timestamp": candles[201]["time"].isoformat(),
+                    "symbol": "XAU/USD",
+                    "timeframe": config.timeframe,
+                    "status": "UNKNOWN",
+                    "side": "BUY",
+                    "message": "THIS TRADE SIGNAL MUST NEVER BE RETRIED",
+                    "attempt_count": 1,
+                    "telegram_message_id": None,
+                }
+            })
+
+            sender = Mock(return_value=699)
+            with (
+                patch("gold_signal.service.fetch_closed_candles", return_value=candles),
+                patch("gold_signal.service.detect_signals", return_value=[stale_data]),
+                patch("gold_signal.service.send_telegram", new=sender),
+                patch("gold_signal.service.maybe_send_daily_quota_warning", return_value=False),
+                patch("gold_signal.service._signal_is_fresh", return_value=False),
+            ):
+                result = run_once(config)
+
+            self.assertEqual(result, "stale_notice_sent")
+            self.assertEqual(sender.call_count, 1)
+            message = sender.call_args.args[1]
+            self.assertIn("STALE SIGNALS SKIPPED", message)
+            self.assertNotIn("THIS TRADE SIGNAL MUST NEVER BE RETRIED", message)
+            self.assertNotIn("[RECOVERY RETRY]", message)
+            self.assertTrue(sender.call_args.kwargs["disable_notification"])
+            record = self.only_record(config)
+            self.assertEqual(record["status"], "SKIPPED_STALE")
+            self.assertEqual(record["lifecycle_status"], "CLOSED_STALE")
+            self.assertEqual(record["stale_notice_status"], "SENT")
 
     def test_stale_notice_unknown_recovers_visibly_without_trading_signal(self):
         with tempfile.TemporaryDirectory() as folder:
