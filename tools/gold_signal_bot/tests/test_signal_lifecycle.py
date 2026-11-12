@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from gold_signal.config import Config
 from gold_signal.lifecycle import detect_lifecycle_events
 from gold_signal.service import run_once
-from gold_signal.state import read_outbox
+from gold_signal.state import read_outbox, write_outbox, write_state
 
 
 class SignalLifecycleTests(unittest.TestCase):
@@ -242,6 +242,60 @@ class SignalLifecycleTests(unittest.TestCase):
             ):
                 run_once(config)
             self.assertEqual(restart_sender.call_count, 0)
+
+    def test_stale_notice_unknown_recovers_visibly_without_trading_signal(self):
+        with tempfile.TemporaryDirectory() as folder:
+            config = self.make_config(folder)
+            candles = self.candles(201)
+            boundary = candles[-1]["time"]
+            write_state(config.state_file, boundary)
+            signal_id = "a" * 64
+            write_outbox(config.state_file, {
+                signal_id: {
+                    "signal_id": signal_id,
+                    "signal_timestamp": candles[-2]["time"].isoformat(),
+                    "timeframe": config.timeframe,
+                    "status": "SKIPPED_STALE",
+                    "lifecycle_status": "CLOSED_STALE",
+                    "stale_notice_group": boundary.isoformat(),
+                    "stale_notice_status": "SENDING",
+                    "stale_notice_attempt_count": 1,
+                    "stale_notice_message_id": None,
+                    "stale_notice_error": None,
+                }
+            })
+
+            sender = Mock(return_value=700)
+            with (
+                patch("gold_signal.service.fetch_closed_candles", return_value=candles),
+                patch("gold_signal.service.detect_signals", return_value=[]),
+                patch("gold_signal.service.send_telegram", new=sender),
+                patch("gold_signal.service.maybe_send_daily_quota_warning", return_value=False),
+            ):
+                result = run_once(config)
+
+            self.assertEqual(result, "stale_notice_sent")
+            self.assertEqual(sender.call_count, 1)
+            message = sender.call_args.args[1]
+            self.assertIn("[RECOVERY RETRY]", message)
+            self.assertIn("STALE SIGNALS SKIPPED", message)
+            self.assertTrue(sender.call_args.kwargs["disable_notification"])
+            record = self.only_record(config)
+            self.assertEqual(record["status"], "SKIPPED_STALE")
+            self.assertEqual(record["lifecycle_status"], "CLOSED_STALE")
+            self.assertEqual(record["stale_notice_status"], "SENT")
+            self.assertEqual(record["stale_notice_message_id"], 700)
+
+            # Once recovered to SENT, another restart must not resend anything.
+            second_sender = Mock(return_value=701)
+            with (
+                patch("gold_signal.service.fetch_closed_candles", return_value=candles),
+                patch("gold_signal.service.detect_signals", return_value=[]),
+                patch("gold_signal.service.send_telegram", new=second_sender),
+                patch("gold_signal.service.maybe_send_daily_quota_warning", return_value=False),
+            ):
+                run_once(config)
+            self.assertEqual(second_sender.call_count, 0)
 
     def test_failed_stale_summary_retries_at_next_run_without_duplicate_group(self):
         with tempfile.TemporaryDirectory() as folder:
