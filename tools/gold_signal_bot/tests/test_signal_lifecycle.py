@@ -243,12 +243,68 @@ class SignalLifecycleTests(unittest.TestCase):
                 run_once(config)
             self.assertEqual(restart_sender.call_count, 0)
 
+    def test_failed_stale_summary_retries_at_next_run_without_duplicate_group(self):
+        with tempfile.TemporaryDirectory() as folder:
+            config = self.make_config(folder)
+            initial = self.candles(201)
+            self.seed_signal(config, initial)
+            replay = self.candles(202)
+            stale_signal = [self.signal(replay[201]["time"])]
+
+            failed_sender = Mock(side_effect=RuntimeError("Telegram rejected stale summary (HTTP 400)"))
+            with (
+                patch("gold_signal.service.fetch_closed_candles", return_value=replay),
+                patch("gold_signal.service.detect_signals", return_value=stale_signal),
+                patch("gold_signal.service.send_telegram", new=failed_sender),
+                patch("gold_signal.service.maybe_send_daily_quota_warning", return_value=False),
+                patch("gold_signal.service._signal_is_fresh", return_value=False),
+            ):
+                result = run_once(config)
+
+            self.assertEqual(result, "processed_no_signal")
+            self.assertEqual(failed_sender.call_count, 1)
+            first_message = failed_sender.call_args.args[1]
+            self.assertTrue(failed_sender.call_args.kwargs["disable_notification"])
+            self.assertIn("1 سیگنال", first_message)
+            record = self.only_record(config)
+            self.assertEqual(record["status"], "SKIPPED_STALE")
+            self.assertEqual(record["lifecycle_status"], "CLOSED_STALE")
+            self.assertEqual(record["stale_notice_status"], "FAILED")
+
+            retry_sender = Mock(return_value=601)
+            with (
+                patch("gold_signal.service.fetch_closed_candles", return_value=replay),
+                patch("gold_signal.service.detect_signals", return_value=[]),
+                patch("gold_signal.service.send_telegram", new=retry_sender),
+                patch("gold_signal.service.maybe_send_daily_quota_warning", return_value=False),
+            ):
+                result = run_once(config)
+
+            self.assertEqual(result, "stale_notice_sent")
+            self.assertEqual(retry_sender.call_count, 1)
+            self.assertEqual(retry_sender.call_args.args[1], first_message)
+            self.assertTrue(retry_sender.call_args.kwargs["disable_notification"])
+            self.assertNotIn("[RECOVERY RETRY]", retry_sender.call_args.args[1])
+            self.assertEqual(self.only_record(config)["stale_notice_status"], "SENT")
+
+            # A later restart/run must not create a second notice for this range.
+            final_sender = Mock(return_value=602)
+            with (
+                patch("gold_signal.service.fetch_closed_candles", return_value=replay),
+                patch("gold_signal.service.detect_signals", return_value=[]),
+                patch("gold_signal.service.send_telegram", new=final_sender),
+                patch("gold_signal.service.maybe_send_daily_quota_warning", return_value=False),
+            ):
+                run_once(config)
+            self.assertEqual(final_sender.call_count, 0)
+
     def test_freshness_grace_is_configurable_and_validated(self):
         env = {
             "GOLD_TWELVE_DATA_API_KEY": "api",
             "GOLD_TELEGRAM_BOT_TOKEN": "token",
             "GOLD_TELEGRAM_CHAT_ID": "chat",
             "GOLD_SIGNAL_FRESHNESS_GRACE_SECONDS": "123",
+            "GOLD_SIGNAL_STATE_FILE": str(Path(tempfile.gettempdir()) / "gold-config-test-state.json"),
         }
         with patch.dict(os.environ, env, clear=True):
             self.assertEqual(Config.from_env().freshness_grace_seconds, 123)
