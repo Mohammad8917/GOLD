@@ -148,14 +148,14 @@ def _process_stale_notice_groups(config: Config, outbox: dict[str, dict], sessio
         count = len(members)
         timeframe = str(members[0][1].get("timeframe", config.timeframe))
         message = (
-            "⚠️ <b>GOLD / XAUUSD — STALE SIGNALS SKIPPED</b>\\n"
-            f"<b>تعداد:</b> {count} سیگنال\\n"
-            f"<b>بازه کندل‌ها:</b> {first_stamp:%Y-%m-%d %H:%M} تا {last_stamp:%Y-%m-%d %H:%M} UTC\\n"
-            f"<b>تایم‌فریم:</b> {timeframe}\\n\\n"
+            "⚠️ <b>GOLD / XAUUSD — STALE SIGNALS SKIPPED</b>\n"
+            f"<b>تعداد:</b> {count} سیگنال\n"
+            f"<b>بازه کندل‌ها:</b> {first_stamp:%Y-%m-%d %H:%M} تا {last_stamp:%Y-%m-%d %H:%M} UTC\n"
+            f"<b>تایم‌فریم:</b> {timeframe}\n\n"
             "این سیگنال‌های قدیمی ارسال نشدند؛ هیچ سفارش یا معامله‌ای اجرا نشده است."
         )
         if any(record.get("stale_notice_status") == "UNKNOWN" for _, record in members):
-            message = "<b>[RECOVERY RETRY]</b>\\n" + message
+            message = "<b>[RECOVERY RETRY]</b>\n" + message
 
         now = datetime.now(timezone.utc).isoformat()
         for _, record in members:
@@ -440,7 +440,7 @@ def _process_due_lifecycle(
             recovery = notice_status == "UNKNOWN"
             message = str(event_record["message"])
             if recovery:
-                message = "<b>[RECOVERY RETRY]</b>\\n" + message
+                message = "<b>[RECOVERY RETRY]</b>\n" + message
 
             notice = {
                 "event": event,
@@ -543,6 +543,7 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
             raise RuntimeError("Insufficient candle history for signal evaluation")
 
         candle_index_by_time = {bar["time"]: index for index, bar in enumerate(candles)}
+        latest_time = candles[-1]["time"]
         cursor_raw = read_state(config.state_file)
         outbox = read_outbox(config.state_file)
         # This is the only permitted SENDING -> UNKNOWN transition point.
