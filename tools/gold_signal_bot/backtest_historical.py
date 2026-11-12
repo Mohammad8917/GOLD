@@ -103,8 +103,20 @@ def fetch_history(api_key: str, timeframe: str, start: date, end: date,
             "end_date": chunk_end.strftime("%Y-%m-%dT%H:%M:%S"),
             "apikey": api_key,
         }
-        response = session.get(API_URL, params=params, timeout=30)
-        response.raise_for_status()
+        try:
+            response = session.get(API_URL, params=params, timeout=30)
+        except requests.RequestException as exc:
+            # Requests exceptions can include the full URL, including the API key
+            # query parameter. Never propagate that string into logs or tracebacks.
+            raise RuntimeError(
+                f"Twelve Data request failed ({type(exc).__name__}); request details suppressed."
+            ) from None
+        if response.status_code >= 400:
+            # Do not call raise_for_status(): its HTTPError string includes the
+            # request URL and could expose the apikey query parameter.
+            raise RuntimeError(
+                f"Twelve Data HTTP request failed (HTTP {response.status_code}); response details suppressed."
+            )
         payload = response.json()
         if not isinstance(payload, dict) or payload.get("status") == "error" or payload.get("code"):
             raise RuntimeError(f"Twelve Data error: {str(payload)[:400]}")
