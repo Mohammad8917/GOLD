@@ -200,7 +200,7 @@ def _process_due_expirations(
                 isinstance(exc, RuntimeError) and str(exc).startswith("Telegram rejected")
             ) or (
                 isinstance(exc, requests.HTTPError)
-                and isinstance(status_code, int) and 400 <= status_code < 500
+                and isinstance(status_code, int) and 400 <= status_code < 500 and status_code not in {408, 425, 429}
             )
             record["expiry_status"] = "FAILED" if definitive_rejection else "UNKNOWN"
             record["expiry_error"] = _redact_error(exc, config)
@@ -366,7 +366,7 @@ def _process_due_lifecycle(
                     isinstance(exc, RuntimeError) and str(exc).startswith("Telegram rejected")
                 ) or (
                     isinstance(exc, requests.HTTPError)
-                    and isinstance(status_code, int) and 400 <= status_code < 500
+                    and isinstance(status_code, int) and 400 <= status_code < 500 and status_code not in {408, 425, 429}
                 )
                 notice["status"] = "FAILED" if definitive_rejection else "UNKNOWN"
                 notice["error"] = _redact_error(exc, config)
@@ -585,7 +585,7 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
                     ) or (
                         isinstance(exc, requests.HTTPError)
                         and isinstance(status_code, int)
-                        and 400 <= status_code < 500
+                        and 400 <= status_code < 500 and status_code not in {408, 425, 429}
                     )
                     record["status"] = "FAILED" if definitive_rejection else "UNKNOWN"
                     record["last_error"] = _redact_error(exc, config)

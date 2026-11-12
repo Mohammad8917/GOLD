@@ -75,12 +75,16 @@ def maybe_send_daily_quota_warning(config, session: requests.Session | None = No
         state.pop("warning_delivery_status", None)
         pending = None
     if state.get("last_usage_check_date") != today:
-        # Persist the attempt before making the billable request. If the
-        # endpoint times out, do not poll it again on every notifier cycle.
-        state["last_usage_check_date"] = today
-        _write_state(path, state)
+        # A failed network request must remain eligible for the next poll cycle.
+        # Persist the successful check date only after the endpoint responds.
+        owns_session = session is None
         client = session or requests.Session()
-        usage = inspect_api_usage(client, api_key=config.api_key, timeout=config.http_timeout)
+        try:
+            usage = inspect_api_usage(client, api_key=config.api_key, timeout=config.http_timeout)
+        finally:
+            if owns_session:
+                client.close()
+        state["last_usage_check_date"] = today
         try:
             used = int(usage.get("daily_usage")) if usage else -1
             limit = int(usage.get("plan_daily_limit")) if usage else -1

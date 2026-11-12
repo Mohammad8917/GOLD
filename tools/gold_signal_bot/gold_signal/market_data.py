@@ -104,16 +104,24 @@ def _get_with_retry(client: requests.Session, url: str, *, params: dict[str, Any
             if response.status_code == 403 and url == TWELVE_DATA_URL:
                 raise RuntimeError("Twelve Data access is forbidden (HTTP 403); check symbol and plan permissions")
             if response.status_code == 429 and url == TWELVE_DATA_URL:
+                retry_after = response.headers.get("Retry-After")
+                close = getattr(response, "close", None)
+                if callable(close):
+                    close()
                 raise quota_error(
                     client, api_key=str(params.get("apikey", "")), timeout=timeout,
-                    retry_after=response.headers.get("Retry-After"),
+                    retry_after=retry_after,
                 )
             if response.status_code in (408, 425, 429) or response.status_code >= 500:
+                status_code = response.status_code
+                retry_after = response.headers.get("Retry-After", "")
+                close = getattr(response, "close", None)
+                if callable(close):
+                    close()
                 if attempt + 1 == attempts:
                     raise RuntimeError(
-                        f"Market-data request failed (HTTP {response.status_code})"
+                        f"Market-data request failed (HTTP {status_code})"
                     )
-                retry_after = response.headers.get("Retry-After", "")
                 try:
                     delay = min(30.0, max(0.0, float(retry_after)))
                 except (TypeError, ValueError):
@@ -121,8 +129,12 @@ def _get_with_retry(client: requests.Session, url: str, *, params: dict[str, Any
                 time.sleep(delay)
                 continue
             if response.status_code >= 400:
+                status_code = response.status_code
+                close = getattr(response, "close", None)
+                if callable(close):
+                    close()
                 raise RuntimeError(
-                    f"Market-data request failed (HTTP {response.status_code})"
+                    f"Market-data request failed (HTTP {status_code})"
                 )
             return response
         except requests.RequestException as exc:
@@ -134,9 +146,8 @@ def _get_with_retry(client: requests.Session, url: str, *, params: dict[str, Any
         raise RuntimeError(f"Market-data request failed ({last_error})")
     raise RuntimeError("Market-data request failed after retries")
 
-def fetch_closed_candles(config: Config, session: requests.Session | None = None) -> list[dict[str, Any]]:
-    """Fetch spot XAU/USD from Twelve Data only; never substitute futures."""
-    client = session or requests.Session()
+def _fetch_closed_candles_with_session(config: Config, client: requests.Session) -> list[dict[str, Any]]:
+    """Fetch spot XAU/USD using a caller-owned session."""
     response = _get_with_retry(
         client, TWELVE_DATA_URL,
         params={"symbol": "XAU/USD", "interval": config.timeframe, "outputsize": 5000,
@@ -145,11 +156,16 @@ def fetch_closed_candles(config: Config, session: requests.Session | None = None
         base_delay=config.retry_base_seconds,
     )
     try:
-        payload = response.json()
-        json_error_type = None
-    except ValueError as exc:
-        json_error_type = type(exc).__name__
-        payload = None
+        try:
+            payload = response.json()
+            json_error_type = None
+        except ValueError as exc:
+            json_error_type = type(exc).__name__
+            payload = None
+    finally:
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
     if json_error_type:
         raise RuntimeError(f"Twelve Data returned invalid JSON ({json_error_type})")
     if not isinstance(payload, dict):
@@ -187,3 +203,14 @@ def fetch_closed_candles(config: Config, session: requests.Session | None = None
     return validate_candles(parsed, timeframe_seconds=seconds,
                             stale_multiplier=config.stale_multiplier,
                             gap_multiplier=config.gap_multiplier)
+
+
+def fetch_closed_candles(config: Config, session: requests.Session | None = None) -> list[dict[str, Any]]:
+    """Fetch spot XAU/USD; close only sessions created inside this function."""
+    owns_session = session is None
+    client = session or requests.Session()
+    try:
+        return _fetch_closed_candles_with_session(config, client)
+    finally:
+        if owns_session:
+            client.close()

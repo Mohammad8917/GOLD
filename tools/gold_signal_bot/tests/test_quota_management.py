@@ -1,6 +1,7 @@
 """Offline tests for Twelve Data quota classification and reset handling."""
 import unittest
 from pathlib import Path
+from datetime import datetime, timezone
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -148,21 +149,25 @@ class QuotaManagementTests(unittest.TestCase):
                     run_once(config)
             self.assertEqual(calls, ["warning", "fetch"])
 
-    def test_failed_daily_usage_check_is_not_repeated_each_poll_cycle(self):
+    def test_failed_daily_usage_check_is_retried_on_next_poll_cycle(self):
         with TemporaryDirectory() as folder:
             config = SimpleNamespace(
                 state_file=Path(folder) / "state.json",
                 api_key="test-key",
                 http_timeout=5,
             )
+            usage = {"daily_usage": 100, "plan_daily_limit": 800}
             with patch(
                 "gold_signal.quota_warning.inspect_api_usage",
-                side_effect=requests.ConnectionError("offline"),
+                side_effect=[requests.Timeout("offline"), usage],
             ) as inspect:
-                with self.assertRaises(requests.ConnectionError):
+                with self.assertRaises(requests.Timeout):
                     maybe_send_daily_quota_warning(config, Mock())
                 self.assertFalse(maybe_send_daily_quota_warning(config, Mock()))
-            inspect.assert_called_once()
+            self.assertEqual(inspect.call_count, 2)
+            from gold_signal.quota_warning import _read_state, _state_path
+            self.assertEqual(_read_state(_state_path(config))["last_usage_check_date"],
+                             datetime.now(timezone.utc).date().isoformat())
 
     def test_daily_warning_is_not_sent_below_80_percent(self):
         with TemporaryDirectory() as folder:
