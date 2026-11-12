@@ -1,0 +1,119 @@
+name: GOLD Telegram Monitoring
+
+on:
+  workflow_run:
+    types: [completed]
+  schedule:
+    # Daily change-only digest at 09:00 UTC (10:00 Berlin in winter).
+    - cron: "0 9 * * *"
+    # Weekly open-PR review every Monday at 09:15 UTC.
+    - cron: "15 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: gold-telegram-monitoring-${{ github.event_name }}-${{ github.event.workflow_run.id || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  ci_failure_alert:
+    name: Immediate CI failure alert
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.name != 'GOLD Telegram Monitoring'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Telegram alert
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -euo pipefail
+          test -n "$TELEGRAM_BOT_TOKEN" || { echo "::error::Missing TELEGRAM_BOT_TOKEN secret"; exit 1; }
+          test -n "$TELEGRAM_CHAT_ID" || { echo "::error::Missing TELEGRAM_CHAT_ID secret"; exit 1; }
+          SHORT_SHA="${SHA:0:7}"
+          TEXT="🚨 GOLD CI FAILED%0AWorkflow: ${WORKFLOW_NAME}%0ABranch: ${BRANCH}%0ACommit: ${SHORT_SHA}%0A${RUN_URL}"
+          curl --fail --silent --show-error --retry 2 \
+            --request POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=${TEXT}"
+
+  daily_change_digest:
+    name: Daily change-only digest
+    if: github.event_name == 'schedule' && github.event.schedule == '0 9 * * *'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summarize changes from the last 24 hours
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          test -n "$TELEGRAM_BOT_TOKEN" || { echo "::error::Missing TELEGRAM_BOT_TOKEN secret"; exit 1; }
+          test -n "$TELEGRAM_CHAT_ID" || { echo "::error::Missing TELEGRAM_CHAT_ID secret"; exit 1; }
+          SINCE="$(date -u -d '24 hours ago' '+%Y-%m-%dT%H:%M:%SZ')"
+          COMMITS="$(gh api "repos/$REPOSITORY/commits?since=$SINCE&per_page=100")"
+          PULLS="$(gh api "repos/$REPOSITORY/pulls?state=all&sort=updated&direction=desc&per_page=100")"
+          COMMIT_COUNT="$(jq 'length' <<< "$COMMITS")"
+          UPDATED_PRS="$(jq --arg since "$SINCE" '[.[] | select(.updated_at >= $since)]' <<< "$PULLS")"
+          PR_COUNT="$(jq 'length' <<< "$UPDATED_PRS")"
+          if [ "$COMMIT_COUNT" -eq 0 ] && [ "$PR_COUNT" -eq 0 ]; then
+            echo "No repository changes in the last 24 hours; Telegram digest suppressed."
+            exit 0
+          fi
+          {
+            echo "📊 GOLD — Daily change summary"
+            echo "Window: last 24 hours"
+            echo "Commits: $COMMIT_COUNT"
+            jq -r '.[:8][] | "• " + (.commit.message | split("\n")[0]) + " (" + .sha[:7] + ")"' <<< "$COMMITS"
+            echo "Updated PRs: $PR_COUNT"
+            jq -r '.[:8][] | "• #" + (.number|tostring) + " " + .title + " — " + (if .draft then "Draft" else "Ready for review" end) + " — " + .html_url' <<< "$UPDATED_PRS"
+          } > message.txt
+          curl --fail --silent --show-error --retry 2 \
+            --request POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text@message.txt"
+
+  weekly_pr_review:
+    name: Weekly Draft PR and merge-readiness review
+    if: github.event_name == 'schedule' && github.event.schedule == '15 9 * * 1'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Review open pull requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          test -n "$TELEGRAM_BOT_TOKEN" || { echo "::error::Missing TELEGRAM_BOT_TOKEN secret"; exit 1; }
+          test -n "$TELEGRAM_CHAT_ID" || { echo "::error::Missing TELEGRAM_CHAT_ID secret"; exit 1; }
+          PULLS="$(gh api "repos/$REPOSITORY/pulls?state=open&sort=updated&direction=desc&per_page=100")"
+          COUNT="$(jq 'length' <<< "$PULLS")"
+          {
+            echo "🗓 GOLD — Weekly PR review"
+            echo "Open PRs: $COUNT"
+            if [ "$COUNT" -eq 0 ]; then
+              echo "No open pull requests."
+            else
+              jq -r '.[] | "• #" + (.number|tostring) + " " + .title + " — " + (if .draft then "DRAFT" else "Ready" end) + " — mergeable: " + ((.mergeable // "unknown")|tostring) + " — " + .html_url' <<< "$PULLS"
+            fi
+            echo ""
+            echo "Recommendation only: review CI, approvals, conflicts and strategy impact before merging. No automatic merge or main-branch changes are performed."
+          } > message.txt
+          curl --fail --silent --show-error --retry 2 \
+            --request POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text@message.txt"
