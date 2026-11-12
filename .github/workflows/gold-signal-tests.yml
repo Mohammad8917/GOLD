@@ -5,9 +5,8 @@ on:
     branches:
       - main
       - import/gold-signal-bot
+      - "feature/**"
   pull_request:
-    branches:
-      - main
     paths:
       - "tools/gold_signal_bot/**"
       - ".github/workflows/gold-signal-tests.yml"

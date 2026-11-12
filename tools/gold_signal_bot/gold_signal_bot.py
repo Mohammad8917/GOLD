@@ -11,14 +11,14 @@ from gold_signal.market_data import (
 )
 from gold_signal.service import run_once
 from gold_signal.state import process_lock, read_state, write_state
-from gold_signal.strategy import detect_signal
+from gold_signal.strategy import detect_signal, detect_signals
 from gold_signal.telegram import format_signal, send_telegram
 from gold_signal.cli import main
 
 __all__ = [
     "Config", "TIMEFRAMES", "atr", "detect_signal", "ema", "fetch_closed_candles",
     "format_signal", "main", "parse_bar_time", "process_lock", "read_state",
-    "rsi", "run_once", "send_telegram", "validate_candles", "write_state",
+    "rsi", "run_once", "detect_signals", "send_telegram", "validate_candles", "write_state",
 ]
 
 if __name__ == "__main__":

@@ -1,6 +1,5 @@
 """Deterministic technical indicator calculations."""
 from __future__ import annotations
-
 from typing import Any
 
 def ema(values: list[float], period: int) -> list[float | None]:
@@ -17,8 +16,10 @@ def ema(values: list[float], period: int) -> list[float | None]:
         out[i] = previous
     return out
 
-
 def rsi(values: list[float], period: int = 14) -> list[float | None]:
+    """Wilder RSI; neutral flat markets map to 50, not 100."""
+    if period < 1:
+        raise ValueError("RSI period must be positive")
     out: list[float | None] = [None] * len(values)
     if len(values) <= period:
         return out
@@ -26,13 +27,20 @@ def rsi(values: list[float], period: int = 14) -> list[float | None]:
     losses = [max(values[i - 1] - values[i], 0.0) for i in range(1, len(values))]
     avg_gain = sum(gains[:period]) / period
     avg_loss = sum(losses[:period]) / period
-    out[period] = 100.0 if avg_loss == 0 else 100.0 - 100.0 / (1.0 + avg_gain / avg_loss)
+    def value(gain: float, loss: float) -> float:
+        if gain == 0.0 and loss == 0.0:
+            return 50.0
+        if loss == 0.0:
+            return 100.0
+        if gain == 0.0:
+            return 0.0
+        return 100.0 - 100.0 / (1.0 + gain / loss)
+    out[period] = value(avg_gain, avg_loss)
     for i in range(period + 1, len(values)):
         avg_gain = (avg_gain * (period - 1) + gains[i - 1]) / period
         avg_loss = (avg_loss * (period - 1) + losses[i - 1]) / period
-        out[i] = 100.0 if avg_loss == 0 else 100.0 - 100.0 / (1.0 + avg_gain / avg_loss)
+        out[i] = value(avg_gain, avg_loss)
     return out
-
 
 def atr(candles: list[dict[str, Any]], period: int = 14) -> list[float | None]:
     out: list[float | None] = [None] * len(candles)

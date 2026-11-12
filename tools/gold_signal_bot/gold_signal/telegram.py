@@ -1,11 +1,14 @@
 """Telegram message formatting and signal-only delivery."""
 from __future__ import annotations
 
+from typing import Any
+
 import requests
 
 from .config import Config
 
 TELEGRAM_URL = "https://api.telegram.org/bot{token}/sendMessage"
+
 
 def format_signal(data: dict[str, Any], timeframe: str) -> str:
     stamp = data["candle_time"].strftime("%Y-%m-%d %H:%M UTC")
@@ -23,14 +26,55 @@ def format_signal(data: dict[str, Any], timeframe: str) -> str:
         "این فقط هشدار تحلیلی است؛ هیچ سفارشی اجرا نشده است. قیمت زنده و اسپرد کارگزار خود را بررسی کنید."
     )
 
-def send_telegram(config: Config, message: str, session: requests.Session | None = None) -> None:
-    """Do not blindly retry POST: a timeout can happen after Telegram accepted it."""
+
+def format_expiry(
+    data: dict[str, Any], timeframe: str, expiry_at, close_price: float,
+    ttl_candles: int,
+) -> str:
+    """Format an explicit lifecycle-expiry notice; never implies an order was executed."""
+    stamp = expiry_at.strftime("%Y-%m-%d %H:%M UTC")
+    side = data.get("side", "نامشخص")
+    return (
+        "⏳ <b>GOLD / XAUUSD — SIGNAL EXPIRED</b>\n"
+        f"<b>جهت:</b> {side}\n"
+        f"<b>تایم‌فریم:</b> {timeframe}\n"
+        f"<b>قیمت بسته‌شدن:</b> {close_price:.2f}\n"
+        f"<b>زمان انقضا:</b> {stamp}\n"
+        f"<b>اعتبار:</b> {ttl_candles} کندل بسته‌شده\n\n"
+        "این سیگنال منقضی شد و دیگر معتبر نیست. هیچ سفارشی اجرا نشده است."
+    )
+
+
+def send_telegram(
+    config: Config,
+    message: str,
+    session: requests.Session | None = None,
+) -> int | None:
+    """Send once and return Telegram's message_id when the API confirms success.
+
+    The caller owns retry policy because a timeout can occur after Telegram has
+    accepted the message. Blind POST retries here could create silent duplicates.
+    """
     client = session or requests.Session()
-    response = client.post(TELEGRAM_URL.format(token=config.bot_token),
-                           data={"chat_id": config.chat_id, "text": message,
-                                 "parse_mode": "HTML", "disable_web_page_preview": "true"},
-                           timeout=config.http_timeout)
+    response = client.post(
+        TELEGRAM_URL.format(token=config.bot_token),
+        data={
+            "chat_id": config.chat_id,
+            "text": message,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": "true",
+        },
+        timeout=config.http_timeout,
+    )
     response.raise_for_status()
     result = response.json()
     if not isinstance(result, dict) or not result.get("ok"):
-        raise RuntimeError("Telegram rejected the message; check bot token, chat ID, and bot permissions")
+        raise RuntimeError(
+            "Telegram rejected the message; check bot token, chat ID, and bot permissions"
+        )
+    payload = result.get("result")
+    if isinstance(payload, dict):
+        message_id = payload.get("message_id")
+        if isinstance(message_id, int):
+            return message_id
+    return None

@@ -124,7 +124,7 @@ def fetch_closed_candles(config: Config, session: requests.Session | None = None
     client = session or requests.Session()
     response = _get_with_retry(
         client, TWELVE_DATA_URL,
-        params={"symbol": "XAU/USD", "interval": config.timeframe, "outputsize": 120,
+        params={"symbol": "XAU/USD", "interval": config.timeframe, "outputsize": 5000,
                 "timezone": "UTC", "format": "ISO", "apikey": config.api_key},
         timeout=config.http_timeout, attempts=config.retry_attempts,
         base_delay=config.retry_base_seconds,

@@ -11,6 +11,15 @@ TIMEFRAMES = {
     "30min": ("30min", 1800), "1h": ("1h", 3600), "4h": ("4h", 14400),
     "1day": ("1day", 86400),
 }
+DEFAULT_SIGNAL_TTL_CANDLES = 24  # 24 one-hour candles = one trading day
+
+
+def default_signal_ttl_candles(timeframe: str) -> int:
+    """Scale the one-day default to the selected candle interval."""
+    if timeframe not in TIMEFRAMES:
+        raise ValueError(f"Unsupported timeframe for signal TTL: {timeframe!r}")
+    seconds = TIMEFRAMES[timeframe][1]
+    return max(1, (24 * 60 * 60 + seconds - 1) // seconds)
 
 @dataclass(frozen=True)
 class Config:
@@ -28,6 +37,7 @@ class Config:
     retry_base_seconds: float
     stale_multiplier: float
     gap_multiplier: float
+    signal_ttl_candles: int = DEFAULT_SIGNAL_TTL_CANDLES
 
     @classmethod
     def from_env(cls, *, require_market_data: bool = True) -> "Config":
@@ -58,6 +68,13 @@ class Config:
         retry_base = float(os.getenv("GOLD_RETRY_BASE_SECONDS", "1"))
         stale_multiplier = float(os.getenv("GOLD_STALE_CANDLE_MULTIPLIER", "3"))
         gap_multiplier = float(os.getenv("GOLD_MAX_GAP_MULTIPLIER", "1.5"))
+        ttl_override = os.getenv("SIGNAL_TTL_CANDLES", "").strip()
+        signal_ttl_candles = (
+            int(ttl_override) if ttl_override
+            else default_signal_ttl_candles(timeframe)
+        )
+        if signal_ttl_candles < 1:
+            raise ValueError("SIGNAL_TTL_CANDLES must be at least 1")
         if not 1 <= retry_attempts <= 8:
             raise ValueError("GOLD_RETRY_ATTEMPTS must be between 1 and 8")
         if not all(math.isfinite(v) and v > 0 for v in (retry_base, stale_multiplier, gap_multiplier)):
@@ -71,4 +88,5 @@ class Config:
         return cls(api_key, bot_token, chat_id, timeframe, poll_seconds,
                    atr_multiplier, tp1_r, tp2_r, state_file,
                    max(5, int(os.getenv("GOLD_HTTP_TIMEOUT", "20"))),
-                   retry_attempts, retry_base, stale_multiplier, gap_multiplier)
+                   retry_attempts, retry_base, stale_multiplier, gap_multiplier,
+                   signal_ttl_candles)
