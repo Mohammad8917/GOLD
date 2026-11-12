@@ -6,6 +6,7 @@ on:
       - main
       - import/gold-signal-bot
       - "feature/**"
+      - integrate-backtest-and-wal
   pull_request:
     paths:
       - "tools/gold_signal_bot/**"
