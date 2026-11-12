@@ -95,7 +95,7 @@ def validate_candles(candles: list[dict[str, Any]], *, timeframe_seconds: int,
 
 def _get_with_retry(client: requests.Session, url: str, *, params: dict[str, Any],
                     timeout: int, attempts: int, base_delay: float) -> requests.Response:
-    last_error: Exception | None = None
+    last_error: str | None = None
     for attempt in range(attempts):
         try:
             response = client.get(url, params=params, timeout=timeout)
