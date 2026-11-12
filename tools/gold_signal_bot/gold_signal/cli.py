@@ -120,7 +120,7 @@ def main() -> int:
             if connectivity_lost or time.monotonic() - last_heartbeat >= 1800:
                 status = "connection restored" if connectivity_lost else "heartbeat: service alive"
                 try:
-                    message_id = send_telegram(config, f"GOLD bot: {status}; XAU/USD signal monitoring active.")
+                    message_id = send_telegram(config, f"GOLD bot: {status}; XAU/USD signal monitoring active.", disable_notification=True)
                     if type(message_id) is not int or message_id <= 0:
                         raise RuntimeError("Heartbeat returned no valid Telegram message_id")
                     last_heartbeat = time.monotonic()
