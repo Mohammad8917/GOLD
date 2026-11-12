@@ -9,6 +9,7 @@ from typing import Any
 import requests
 
 from .config import Config, TIMEFRAMES
+from .quota import quota_error
 
 TWELVE_DATA_URL = "https://api.twelvedata.com/time_series"
 
@@ -98,6 +99,20 @@ def _get_with_retry(client: requests.Session, url: str, *, params: dict[str, Any
     for attempt in range(attempts):
         try:
             response = client.get(url, params=params, timeout=timeout)
+            if response.status_code == 401 and url == TWELVE_DATA_URL:
+                raise RuntimeError("Twelve Data API key is invalid or missing (HTTP 401); replace the key")
+            if response.status_code == 403 and url == TWELVE_DATA_URL:
+                raise RuntimeError("Twelve Data access is forbidden (HTTP 403); check symbol and plan permissions")
+            if response.status_code == 429 and url == TWELVE_DATA_URL:
+                try:
+                    error_payload = response.json()
+                except ValueError:
+                    error_payload = {}
+                message = str(error_payload.get("message", "")) if isinstance(error_payload, dict) else ""
+                raise quota_error(
+                    client, api_key=str(params.get("apikey", "")), timeout=timeout,
+                    message=message, retry_after=response.headers.get("Retry-After"),
+                )
             if response.status_code in (408, 425, 429) or response.status_code >= 500:
                 if attempt + 1 == attempts:
                     response.raise_for_status()
@@ -133,9 +148,19 @@ def fetch_closed_candles(config: Config, session: requests.Session | None = None
     if not isinstance(payload, dict):
         raise RuntimeError("Twelve Data returned an unexpected response")
     if payload.get("status") == "error" or payload.get("code"):
-        message = str(payload.get("message") or payload.get("code") or "unknown provider error")
-        if "rate" in message.lower() or str(payload.get("code")) == "429":
-            raise RuntimeError("Twelve Data rate limit reached; retry on the next polling cycle")
+        error_code = str(payload.get("code") or "")
+        message = str(payload.get("message") or error_code or "unknown provider error")
+        if error_code == "401":
+            raise RuntimeError("Twelve Data authentication failed (code 401); verify the API key")
+        if error_code == "403":
+            raise RuntimeError("Twelve Data permission denied (code 403); verify plan access")
+        if error_code == "429":
+            raise quota_error(
+                client, api_key=config.api_key, timeout=config.http_timeout,
+                message=message,
+            )
+        if "rate" in message.lower():
+            raise RuntimeError("Twelve Data rate limit error without HTTP/code 429")
         raise RuntimeError(f"Twelve Data error: {message[:250]}")
     values = payload.get("values")
     if not isinstance(values, list) or not values:
