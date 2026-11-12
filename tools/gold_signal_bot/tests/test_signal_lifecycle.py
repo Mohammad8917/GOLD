@@ -140,6 +140,39 @@ class SignalLifecycleTests(unittest.TestCase):
             self.assertIn("[RECOVERY RETRY]", sender.call_args.args[1])
             self.assertEqual(self.only_record(config)["lifecycle_status"], "TP1_HIT")
 
+    def test_sent_signal_catchup_replays_multiple_candles_and_keeps_stop_first(self):
+        with tempfile.TemporaryDirectory() as folder:
+            config = self.make_config(folder)
+            initial = self.candles(201)
+            self.seed_signal(config, initial)
+            replay = self.candles(204)
+            # First missed candle touches both SL and TP1: conservative SL-first
+            # ordering must close the already-SENT signal exactly once.
+            replay[201].update(high=2611.0, low=2589.0)
+            # A later missed candle reaches TP2, but a signal already closed by
+            # the earlier SL must not emit any additional lifecycle event.
+            replay[202].update(high=2625.0, low=2600.0)
+            replay[203].update(high=2628.0, low=2600.0)
+            sender = Mock(return_value=104)
+            with (
+                patch("gold_signal.service.fetch_closed_candles", return_value=replay),
+                patch("gold_signal.service.detect_signals", return_value=[]),
+                patch("gold_signal.service.send_telegram", new=sender),
+                patch("gold_signal.service.maybe_send_daily_quota_warning", return_value=False),
+            ):
+                result = run_once(config)
+
+            self.assertEqual(result, "lifecycle_updated")
+            self.assertEqual(sender.call_count, 1)
+            self.assertIn("SL", sender.call_args.args[1])
+            record = self.only_record(config)
+            self.assertEqual(record["status"], "SENT")
+            self.assertEqual(record["lifecycle_status"], "SL_CLOSED")
+            self.assertEqual(
+                [event["event"] for event in record["lifecycle_event_history"]],
+                ["SL"],
+            )
+
     def test_lifecycle_rejects_impossible_ohlc_range(self):
         record = {
             "side": "BUY", "stop_loss": 2590.0,
