@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet(24, 48, 72)]
+    [ValidateSet(1, 2, 4, 24, 48, 72)]
     [int]$Hours = 24,
 
     [ValidateRange(10, 3600)]
