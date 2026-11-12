@@ -105,9 +105,9 @@ def fetch_history(api_key: str, timeframe: str, start: date, end: date,
         }
         try:
             response = session.get(API_URL, params=params, timeout=30)
-        except requests.RequestException as exc:
-            # Requests exceptions can include the full URL, including the API key
-            # query parameter. Never propagate that string into logs or tracebacks.
+        except Exception as exc:
+            # Any request-layer exception may contain the prepared URL and API key.
+            # Expose only the exception type, never its message or chained context.
             raise RuntimeError(
                 f"Twelve Data request failed ({type(exc).__name__}); request details suppressed."
             ) from None
@@ -117,17 +117,32 @@ def fetch_history(api_key: str, timeframe: str, start: date, end: date,
             raise RuntimeError(
                 f"Twelve Data HTTP request failed (HTTP {response.status_code}); response details suppressed."
             )
-        payload = response.json()
-        if not isinstance(payload, dict) or payload.get("status") == "error" or payload.get("code"):
-            raise RuntimeError(f"Twelve Data error: {str(payload)[:400]}")
+        try:
+            payload = response.json()
+        except Exception as exc:
+            # JSON decoder/provider exceptions may contain response fragments.
+            raise RuntimeError(
+                f"Twelve Data returned invalid JSON ({type(exc).__name__}); response details suppressed."
+            ) from None
+        if not isinstance(payload, dict):
+            raise RuntimeError("Twelve Data returned an invalid response object; response details suppressed.")
+        if payload.get("status") == "error" or payload.get("code"):
+            # Do not include provider-supplied status, code, message, or payload text:
+            # provider response fields are untrusted and may echo request secrets.
+            raise RuntimeError("Twelve Data returned an error response; response details suppressed.")
         values = payload.get("values")
         if not isinstance(values, list):
-            raise RuntimeError(f"No historical values returned: {str(payload)[:300]}")
+            raise RuntimeError("Twelve Data response has no valid historical values list; response details suppressed.")
         if len(values) >= 4000:
             raise RuntimeError("Provider returned at least 4,000 rows for one chunk; reduce chunk size and rerun to avoid silent truncation.")
         for item in values:
-            stamp = parse_time(str(item["datetime"]))
-            bar = {"time": stamp, **{k: float(item[k]) for k in ("open", "high", "low", "close")}}
+            try:
+                stamp = parse_time(str(item["datetime"]))
+                bar = {"time": stamp, **{k: float(item[k]) for k in ("open", "high", "low", "close")}}
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Twelve Data returned a malformed candle ({type(exc).__name__}); response details suppressed."
+                ) from None
             o, h, low, close = (bar[k] for k in ("open", "high", "low", "close"))
             if not all(math.isfinite(v) for v in (o, h, low, close)) or low <= 0 or h < max(o, low, close) or low > min(o, close):
                 raise RuntimeError(f"Invalid OHLC candle at {stamp.isoformat()}")
@@ -598,7 +613,9 @@ def main() -> int:
         )
         return 0
     except Exception as exc:
-        print(f"Backtest failed: {exc}", file=sys.stderr)
+        # Exception messages may contain provider URLs, query strings, or secrets.
+        # Report only the exception class; never print raw exception text here.
+        print(f"Backtest failed ({type(exc).__name__}); details suppressed.", file=sys.stderr)
         return 1
 
 
