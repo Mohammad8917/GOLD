@@ -33,7 +33,8 @@ STRATEGY_VERSION = "ema20-ema50-rsi14-atr14-v1"
 
 
 def make_bars(count: int = 202) -> list[dict]:
-    start = datetime(2026, 11, 10, tzinfo=timezone.utc)
+    # Keep the fixture's newest candle inside the live-signal grace window.
+    start = datetime.now(timezone.utc) - timedelta(minutes=15 * (count - 1) + 16)
     return [
         {
             "time": start + timedelta(minutes=15 * index),
@@ -122,6 +123,24 @@ class DeliveryWalTests(unittest.TestCase):
             detect_signals=lambda *_args, **_kwargs: [self.signal],
             format_signal=lambda *_args, **_kwargs: "test signal message",
         )
+
+    def test_skipped_stale_is_a_valid_durable_wal_status(self):
+        key = signal_key(self.signal)
+        record = {
+            "signal_id": key,
+            "signal_timestamp": self.signal["candle_time"].isoformat(),
+            "symbol": "XAU/USD",
+            "timeframe": "15min",
+            "status": "SKIPPED_STALE",
+            "attempt_count": 0,
+            "message": "historical signal not announced",
+            "telegram_message_id": None,
+            "last_error": None,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "lifecycle_status": "CLOSED_STALE",
+        }
+        write_outbox(self.state_path, {key: record})
+        self.assertEqual(read_outbox(self.state_path)[key]["status"], "SKIPPED_STALE")
 
     def test_ambiguous_timeout_keeps_cursor_and_retries_with_visible_marker(self):
         accepted_by_telegram = []
