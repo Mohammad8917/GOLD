@@ -107,11 +107,17 @@ class Config:
         if not all(math.isfinite(v) and v > 0 for v in (retry_base, stale_multiplier, gap_multiplier)):
             raise ValueError("Retry delay and candle validation multipliers must be finite positive numbers")
         state_value = os.getenv("GOLD_SIGNAL_STATE_FILE", "").strip()
-        state_file = (
-            Path(state_value).expanduser()
-            if state_value
-            else Path.home() / ".quantdinger_gold_signal_state.json"
-        )
+        if state_value:
+            state_file = Path(state_value).expanduser()
+        else:
+            try:
+                state_file = Path.home() / ".quantdinger_gold_signal_state.json"
+            except (RuntimeError, OSError) as exc:
+                raise ValueError(
+                    "Cannot determine the user home directory for GOLD state storage. "
+                    "Set GOLD_SIGNAL_STATE_FILE to an explicit writable file path "
+                    "(especially when running under Windows Task Scheduler or a service)."
+                ) from exc
         return cls(api_key, bot_token, chat_id, timeframe, poll_seconds,
                    atr_multiplier, tp1_r, tp2_r, state_file,
                    max(5, int(os.getenv("GOLD_HTTP_TIMEOUT", "20"))),
