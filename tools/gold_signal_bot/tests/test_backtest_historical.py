@@ -1,17 +1,22 @@
 """Regression tests for historical backtest execution accounting."""
 from __future__ import annotations
 
+import io
+import os
 import sys
+import traceback
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from contextlib import redirect_stderr
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from backtest_historical import (  # noqa: E402
     evaluate_chronological_holdout, monte_carlo_risk_metrics,
     select_test_window_signals, simulate,
     validate_history_continuity,
-    validate_test_window_coverage,
+    validate_test_window_coverage, fetch_history,
 )
 
 
@@ -29,6 +34,216 @@ def signal(index: int = 0) -> dict:
         "side": "BUY", "entry": 100.0, "stop": 90.0,
         "tp1": 110.0, "tp2": 120.0, "risk": 10.0,
     }
+
+
+
+class HistoricalRequestSecretRedactionTests(unittest.TestCase):
+    def test_http_error_does_not_expose_api_key_or_request_url(self) -> None:
+        class Response:
+            status_code = 403
+
+        class Session:
+            def get(self, *_args, **_kwargs):
+                return Response()
+
+        with self.assertRaises(RuntimeError) as caught:
+            fetch_history(
+                "SENSITIVE_TEST_KEY", "15min",
+                date(2026, 1, 1), date(2026, 1, 2), Session(),
+            )
+        message = str(caught.exception)
+        self.assertIn("HTTP 403", message)
+        self.assertNotIn("SENSITIVE_TEST_KEY", message)
+        self.assertNotIn("apikey", message)
+        self.assertNotIn("https://", message)
+
+    def test_network_error_does_not_expose_api_key_or_request_url(self) -> None:
+        import requests
+
+        class Session:
+            def get(self, *_args, **_kwargs):
+                raise requests.Timeout(
+                    "timed out for https://api.twelvedata.com/time_series?apikey=SENSITIVE_TEST_KEY"
+                )
+
+        with self.assertRaises(RuntimeError) as caught:
+            fetch_history(
+                "SENSITIVE_TEST_KEY", "15min",
+                date(2026, 1, 1), date(2026, 1, 2), Session(),
+            )
+        message = str(caught.exception)
+        self.assertIn("Timeout", message)
+        self.assertNotIn("SENSITIVE_TEST_KEY", message)
+        self.assertNotIn("apikey", message)
+        self.assertNotIn("https://", message)
+
+
+    def test_invalid_json_does_not_expose_response_text_in_message_or_traceback(self) -> None:
+        class Response:
+            status_code = 200
+
+            def json(self):
+                raise ValueError(
+                    "invalid JSON from https://api.twelvedata.com/time_series?apikey=SENSITIVE_TEST_KEY"
+                )
+
+        class Session:
+            def get(self, *_args, **_kwargs):
+                return Response()
+
+        with self.assertRaises(RuntimeError) as caught:
+            fetch_history(
+                "SENSITIVE_TEST_KEY", "15min",
+                date(2026, 1, 1), date(2026, 1, 2), Session(),
+            )
+        rendered = "".join(traceback.format_exception(
+            type(caught.exception), caught.exception, caught.exception.__traceback__
+        ))
+        for secret in ("SENSITIVE_TEST_KEY", "apikey", "https://api.twelvedata.com"):
+            self.assertNotIn(secret, str(caught.exception))
+            self.assertNotIn(secret, rendered)
+        self.assertIsNone(caught.exception.__cause__)
+
+    def test_provider_error_payload_never_echoes_raw_fields(self) -> None:
+        malicious = "https://api.twelvedata.com/time_series?apikey=SENSITIVE_TEST_KEY"
+        for payload in (
+            {"status": "error", "message": malicious},
+            {"code": 401, "message": malicious},
+        ):
+            with self.subTest(payload_kind=tuple(payload.keys())):
+                class Response:
+                    status_code = 200
+
+                    def json(self):
+                        return payload
+
+                class Session:
+                    def get(self, *_args, **_kwargs):
+                        return Response()
+
+                with self.assertRaises(RuntimeError) as caught:
+                    fetch_history(
+                        "SENSITIVE_TEST_KEY", "15min",
+                        date(2026, 1, 1), date(2026, 1, 2), Session(),
+                    )
+                self.assertNotIn("SENSITIVE_TEST_KEY", str(caught.exception))
+                self.assertNotIn("apikey", str(caught.exception))
+                self.assertNotIn("https://", str(caught.exception))
+
+    def test_missing_or_invalid_values_are_reported_without_payload_text(self) -> None:
+        malicious = "https://api.twelvedata.com/time_series?apikey=SENSITIVE_TEST_KEY"
+        for payload in (
+            {"message": malicious, "values": None},
+            {"values": malicious},
+            {"values": []},
+        ):
+            with self.subTest(values_type=type(payload.get("values")).__name__):
+                class Response:
+                    status_code = 200
+
+                    def json(self):
+                        return payload
+
+                class Session:
+                    def get(self, *_args, **_kwargs):
+                        return Response()
+
+                with self.assertRaises(RuntimeError) as caught:
+                    fetch_history(
+                        "SENSITIVE_TEST_KEY", "15min",
+                        date(2026, 1, 1), date(2026, 1, 2), Session(),
+                    )
+                self.assertNotIn("SENSITIVE_TEST_KEY", str(caught.exception))
+                self.assertNotIn("apikey", str(caught.exception))
+                self.assertNotIn("https://", str(caught.exception))
+
+    def test_malformed_candle_does_not_echo_provider_value(self) -> None:
+        malicious = "https://api.twelvedata.com/time_series?apikey=SENSITIVE_TEST_KEY"
+        payload = {"values": [{
+            "datetime": malicious, "open": "100", "high": "101",
+            "low": "99", "close": "100",
+        }]}
+
+        class Response:
+            status_code = 200
+
+            def json(self):
+                return payload
+
+        class Session:
+            def get(self, *_args, **_kwargs):
+                return Response()
+
+        with self.assertRaises(RuntimeError) as caught:
+            fetch_history(
+                "SENSITIVE_TEST_KEY", "15min",
+                date(2026, 1, 1), date(2026, 1, 2), Session(),
+            )
+        self.assertNotIn("SENSITIVE_TEST_KEY", str(caught.exception))
+        self.assertNotIn("apikey", str(caught.exception))
+        self.assertNotIn("https://", str(caught.exception))
+
+    def test_session_get_is_called_once_with_expected_request_parameters(self) -> None:
+        values = []
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        for index in range(100):
+            stamp = start + timedelta(minutes=15 * index)
+            values.append({
+                "datetime": stamp.strftime("%Y-%m-%d %H:%M:%S"),
+                "open": "100", "high": "101", "low": "99", "close": "100",
+            })
+
+        class Response:
+            status_code = 200
+
+            def json(self):
+                return {"values": values}
+
+        class Session:
+            def __init__(self):
+                self.calls = []
+
+            def get(self, url, **kwargs):
+                self.calls.append((url, kwargs))
+                return Response()
+
+        session = Session()
+        result = fetch_history(
+            "SENSITIVE_TEST_KEY", "15min",
+            date(2026, 1, 1), date(2026, 1, 2), session,
+        )
+        self.assertEqual(len(result), 100)
+        self.assertEqual(len(session.calls), 1)
+        url, kwargs = session.calls[0]
+        self.assertEqual(url, "https://api.twelvedata.com/time_series")
+        self.assertEqual(kwargs["timeout"], 30)
+        self.assertEqual(kwargs["params"]["symbol"], "XAU/USD")
+        self.assertEqual(kwargs["params"]["interval"], "15min")
+        self.assertEqual(kwargs["params"]["timezone"], "UTC")
+        self.assertEqual(kwargs["params"]["format"], "ISO")
+        self.assertEqual(kwargs["params"]["order"], "asc")
+        self.assertEqual(kwargs["params"]["start_date"], "2026-01-01T00:00:00")
+        self.assertEqual(kwargs["params"]["end_date"], "2026-01-03T00:00:00")
+        self.assertEqual(kwargs["params"]["apikey"], "SENSITIVE_TEST_KEY")
+
+    def test_main_error_output_suppresses_raw_exception_message(self) -> None:
+        secret_message = (
+            "failure at https://api.twelvedata.com/time_series?apikey=SENSITIVE_TEST_KEY"
+        )
+        stderr = io.StringIO()
+        with patch.object(sys, "argv", [
+            "backtest_historical.py", "--start", "2026-01-01", "--end", "2026-01-02"
+        ]), patch.dict(os.environ, {"GOLD_TWELVE_DATA_API_KEY": "SENSITIVE_TEST_KEY"}), \
+             patch("backtest_historical.fetch_history_with_warmup", side_effect=RuntimeError(secret_message)), \
+             redirect_stderr(stderr):
+            from backtest_historical import main
+            result = main()
+        output = stderr.getvalue()
+        self.assertEqual(result, 1)
+        self.assertIn("RuntimeError", output)
+        self.assertNotIn("SENSITIVE_TEST_KEY", output)
+        self.assertNotIn("apikey", output)
+        self.assertNotIn("https://", output)
 
 
 class HistoricalBacktestExecutionTests(unittest.TestCase):

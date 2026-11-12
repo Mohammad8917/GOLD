@@ -95,7 +95,7 @@ def validate_candles(candles: list[dict[str, Any]], *, timeframe_seconds: int,
 
 def _get_with_retry(client: requests.Session, url: str, *, params: dict[str, Any],
                     timeout: int, attempts: int, base_delay: float) -> requests.Response:
-    last_error: Exception | None = None
+    last_error: str | None = None
     for attempt in range(attempts):
         try:
             response = client.get(url, params=params, timeout=timeout)
@@ -104,18 +104,15 @@ def _get_with_retry(client: requests.Session, url: str, *, params: dict[str, Any
             if response.status_code == 403 and url == TWELVE_DATA_URL:
                 raise RuntimeError("Twelve Data access is forbidden (HTTP 403); check symbol and plan permissions")
             if response.status_code == 429 and url == TWELVE_DATA_URL:
-                try:
-                    error_payload = response.json()
-                except ValueError:
-                    error_payload = {}
-                message = str(error_payload.get("message", "")) if isinstance(error_payload, dict) else ""
                 raise quota_error(
                     client, api_key=str(params.get("apikey", "")), timeout=timeout,
-                    message=message, retry_after=response.headers.get("Retry-After"),
+                    retry_after=response.headers.get("Retry-After"),
                 )
             if response.status_code in (408, 425, 429) or response.status_code >= 500:
                 if attempt + 1 == attempts:
-                    response.raise_for_status()
+                    raise RuntimeError(
+                        f"Market-data request failed (HTTP {response.status_code})"
+                    )
                 retry_after = response.headers.get("Retry-After", "")
                 try:
                     delay = min(30.0, max(0.0, float(retry_after)))
@@ -123,15 +120,18 @@ def _get_with_retry(client: requests.Session, url: str, *, params: dict[str, Any
                     delay = min(30.0, base_delay * (2 ** attempt))
                 time.sleep(delay)
                 continue
-            response.raise_for_status()
+            if response.status_code >= 400:
+                raise RuntimeError(
+                    f"Market-data request failed (HTTP {response.status_code})"
+                )
             return response
-        except (requests.Timeout, requests.ConnectionError) as exc:
-            last_error = exc
-            if attempt + 1 == attempts:
-                raise
+        except requests.RequestException as exc:
+            last_error = type(exc).__name__
+            if not isinstance(exc, (requests.Timeout, requests.ConnectionError)) or attempt + 1 == attempts:
+                break
             time.sleep(min(30.0, base_delay * (2 ** attempt)))
     if last_error:
-        raise last_error
+        raise RuntimeError(f"Market-data request failed ({last_error})")
     raise RuntimeError("Market-data request failed after retries")
 
 def fetch_closed_candles(config: Config, session: requests.Session | None = None) -> list[dict[str, Any]]:
@@ -144,12 +144,18 @@ def fetch_closed_candles(config: Config, session: requests.Session | None = None
         timeout=config.http_timeout, attempts=config.retry_attempts,
         base_delay=config.retry_base_seconds,
     )
-    payload = response.json()
+    try:
+        payload = response.json()
+        json_error_type = None
+    except ValueError as exc:
+        json_error_type = type(exc).__name__
+        payload = None
+    if json_error_type:
+        raise RuntimeError(f"Twelve Data returned invalid JSON ({json_error_type})")
     if not isinstance(payload, dict):
         raise RuntimeError("Twelve Data returned an unexpected response")
     if payload.get("status") == "error" or payload.get("code"):
         error_code = str(payload.get("code") or "")
-        message = str(payload.get("message") or error_code or "unknown provider error")
         if error_code == "401":
             raise RuntimeError("Twelve Data authentication failed (code 401); verify the API key")
         if error_code == "403":
@@ -157,11 +163,13 @@ def fetch_closed_candles(config: Config, session: requests.Session | None = None
         if error_code == "429":
             raise quota_error(
                 client, api_key=config.api_key, timeout=config.http_timeout,
-                message=message,
             )
-        if "rate" in message.lower():
-            raise RuntimeError("Twelve Data rate limit error without HTTP/code 429")
-        raise RuntimeError(f"Twelve Data error: {message[:250]}")
+        if error_code.isdigit():
+            raise RuntimeError(f"Twelve Data returned an error (code {error_code[:6]})")
+        provider_message = payload.get("message")
+        if isinstance(provider_message, str) and "rate limit" in provider_message.lower():
+            raise RuntimeError("Twelve Data rate limit error (provider details suppressed)")
+        raise RuntimeError("Twelve Data error response (provider details suppressed)")
     values = payload.get("values")
     if not isinstance(values, list) or not values:
         raise RuntimeError("Twelve Data returned no XAU/USD candles")
