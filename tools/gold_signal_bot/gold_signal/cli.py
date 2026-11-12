@@ -54,7 +54,15 @@ def _run_current_candle_with_retry(config: Config, stop_event: threading.Event) 
             # provider candle. At the just-closed boundary this can mean the
             # provider has not published the new candle yet.
             last_error = None
+        except QuotaLimitError:
+            raise
         except Exception as exc:
+            error_text = str(exc).lower()
+            if any(marker in error_text for marker in (
+                "401", "403", "authentication", "permission denied",
+                "invalid or missing", "access is forbidden",
+            )):
+                raise
             last_error = exc
 
         if attempt == 4 or stop_event.is_set():
@@ -117,6 +125,11 @@ def main() -> int:
         wait_seconds = seconds_until_next_candle_close(config.timeframe, offset_seconds=config.candle_close_offset_seconds)
         try:
             _run_current_candle_with_retry(config, stop_event)
+            # Recompute after bounded retries; the pre-run delay is stale now.
+            wait_seconds = seconds_until_next_candle_close(
+                config.timeframe,
+                offset_seconds=config.candle_close_offset_seconds,
+            )
             if connectivity_lost or time.monotonic() - last_heartbeat >= 1800:
                 status = "connection restored" if connectivity_lost else "heartbeat: service alive"
                 try:
