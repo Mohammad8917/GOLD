@@ -164,8 +164,8 @@ def fetch_closed_candles(config: Config, session: requests.Session | None = None
             raise quota_error(
                 client, api_key=config.api_key, timeout=config.http_timeout,
             )
-        if error_code:
-            raise RuntimeError(f"Twelve Data returned an error (code {error_code[:20]})")
+        if error_code.isdigit():
+            raise RuntimeError(f"Twelve Data returned an error (code {error_code[:6]})")
         raise RuntimeError("Twelve Data returned an error response")
     values = payload.get("values")
     if not isinstance(values, list) or not values:
