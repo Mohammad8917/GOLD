@@ -41,7 +41,7 @@ Write-Host "Monitoring GOLD PID $ProcessId for $Hours hours."
 Write-Host "State:  $StateFile"
 Write-Host "Outbox: $outboxPath"
 Write-Host "CSV:    $csvPath"
-Write-Host "This monitor does not stop or restart the bot."
+Write-Host "Watchdog enabled: exited bot processes are restarted automatically."
 
 while ((Get-Date) -lt $deadline) {
     $sampleTime = (Get-Date).ToUniversalTime().ToString("o")
@@ -126,7 +126,12 @@ while ((Get-Date) -lt $deadline) {
     }
 
     if (-not $alive) {
-        throw "GOLD process $ProcessId exited before the $Hours-hour observation completed. See $csvPath"
+        Write-Warning "GOLD process exited. Restarting in five seconds."
+        Start-Sleep -Seconds 5
+        $botScript = Join-Path $PSScriptRoot "gold_signal_bot.py"
+        $process = Start-Process -FilePath "python" -ArgumentList @($botScript) -WorkingDirectory $repoRoot -PassThru
+        $ProcessId = [int]$process.Id
+        Write-Host "Watchdog restarted GOLD bot with PID $ProcessId"
     }
     if (-not $stateParseOk -or -not $outboxParseOk) {
         throw "State or WAL JSON became unreadable. Stop the test and inspect the files; see $csvPath"
