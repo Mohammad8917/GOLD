@@ -1,6 +1,7 @@
 """Regression tests for Telegram signal lifecycle notifications (no trade execution)."""
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import unittest
@@ -196,6 +197,66 @@ class SignalLifecycleTests(unittest.TestCase):
             detect_lifecycle_events(record, {"high": 2611.0, "low": 2579.0}),
             ["SL"],
         )
+
+
+    def test_twenty_stale_signals_create_one_silent_durable_summary_and_no_signal_posts(self):
+        with tempfile.TemporaryDirectory() as folder:
+            config = Config(
+                "api-key", "bot-token", "chat-id", "1h", 60, 1.5, 1.0, 2.0,
+                Path(folder) / "state.json", 5, 2, 0.01, 3.0, 1.5, 1000,
+            )
+            initial = self.candles(201)
+            self.seed_signal(config, initial)
+            replay = self.candles(221)
+            stale_signals = [self.signal(replay[index]["time"]) for index in range(201, 221)]
+            sender = Mock(return_value=501)
+            with (
+                patch("gold_signal.service.fetch_closed_candles", return_value=replay),
+                patch("gold_signal.service.detect_signals", return_value=stale_signals),
+                patch("gold_signal.service.send_telegram", new=sender),
+                patch("gold_signal.service.maybe_send_daily_quota_warning", return_value=False),
+                patch("gold_signal.service._signal_is_fresh", return_value=False),
+            ):
+                result = run_once(config)
+
+            self.assertEqual(result, "stale_notice_sent")
+            self.assertEqual(sender.call_count, 1)
+            self.assertTrue(sender.call_args.kwargs["disable_notification"])
+            summary = sender.call_args.args[1]
+            self.assertIn("20 سیگنال", summary)
+            self.assertIn("2026-11-09 09:00", summary)
+            self.assertIn("2026-11-10 04:00", summary)
+            records = read_outbox(config.state_file)
+            stale = [record for record in records.values() if record.get("status") == "SKIPPED_STALE"]
+            self.assertEqual(len(stale), 20)
+            self.assertTrue(all(record["stale_notice_status"] == "SENT" for record in stale))
+            self.assertTrue(all(record["lifecycle_status"] == "CLOSED_STALE" for record in stale))
+
+            # A second process invocation after the durable SENT write must not resend.
+            restart_sender = Mock(return_value=502)
+            with (
+                patch("gold_signal.service.fetch_closed_candles", return_value=replay),
+                patch("gold_signal.service.detect_signals", return_value=stale_signals),
+                patch("gold_signal.service.send_telegram", new=restart_sender),
+                patch("gold_signal.service.maybe_send_daily_quota_warning", return_value=False),
+            ):
+                run_once(config)
+            self.assertEqual(restart_sender.call_count, 0)
+
+    def test_freshness_grace_is_configurable_and_validated(self):
+        env = {
+            "GOLD_TWELVE_DATA_API_KEY": "api",
+            "GOLD_TELEGRAM_BOT_TOKEN": "token",
+            "GOLD_TELEGRAM_CHAT_ID": "chat",
+            "GOLD_SIGNAL_FRESHNESS_GRACE_SECONDS": "123",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(Config.from_env().freshness_grace_seconds, 123)
+        env["GOLD_SIGNAL_FRESHNESS_GRACE_SECONDS"] = "-1"
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertRaisesRegex(ValueError, "FRESHNESS_GRACE_SECONDS"):
+                Config.from_env()
+
 
 
 if __name__ == "__main__":
