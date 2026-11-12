@@ -1,58 +1,69 @@
-"""Manual strategy identity and AST-based guard against forgotten version bumps.
+"""Version-independent normalized-source fingerprint for strategy logic.
 
-When strategy.py or indicators.py logic changes, deliberately update both
-STRATEGY_VERSION and STRATEGY_AST_HASH in this file in the same commit.
-Comments, whitespace, and docstrings are excluded from the fingerprint.
+The fingerprint is based on Python tokenizer token names and token text, not
+ast.dump() output. Comments and layout-only tokens are ignored. String literals
+(including docstrings) remain part of the fingerprint because they are observable
+runtime values. The strategy and indicator files use syntax supported by Python
+3.11-3.13; the CI matrix verifies those runtimes explicitly.
 """
 from __future__ import annotations
 
-import ast
 import hashlib
+import io
+import tokenize
 from pathlib import Path
 from typing import Mapping
 
 STRATEGY_VERSION = "ema20-ema50-rsi14-atr14-v1"
-STRATEGY_AST_HASH = "sha256:e6f806c4e13fdebdcca260a44b6290195915d5b888f337a48244c7be6d9ca977"
+STRATEGY_SOURCE_HASH = "sha256:21a79c485fddecc7c7591b5faa9b2c004ecfdfc1f7a6e651423d3535f27e504a"
 
 # Append a new (version, hash) pair for every strategy/indicator logic change.
 # Never rewrite an existing release entry: it makes forgotten version bumps testable.
 STRATEGY_VERSION_HISTORY = (
     (
         "ema20-ema50-rsi14-atr14-v1",
-        "sha256:e6f806c4e13fdebdcca260a44b6290195915d5b888f337a48244c7be6d9ca977",
+        "sha256:21a79c485fddecc7c7591b5faa9b2c004ecfdfc1f7a6e651423d3535f27e504a",
     ),
 )
 
-
-def _remove_docstrings(tree: ast.AST) -> ast.AST:
-    """Remove module/class/function docstrings before canonical AST dumping."""
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            body = getattr(node, "body", None)
-            if body and isinstance(body[0], ast.Expr):
-                value = body[0].value
-                if isinstance(value, ast.Constant) and isinstance(value.value, str):
-                    del body[0]
-    return tree
+# Token types representing layout or comments do not affect executable source.
+_IGNORED_TOKEN_NAMES = frozenset(
+    {"ENCODING", "NL", "NEWLINE", "INDENT", "DEDENT", "COMMENT", "ENDMARKER"}
+)
 
 
-def strategy_ast_hash(sources: Mapping[str, str]) -> str:
-    """Hash normalized strategy and indicator ASTs; ignore formatting and docstrings."""
+def strategy_source_hash(sources: Mapping[str, str]) -> str:
+    """Hash normalized Python tokens, ignoring comments and formatting.
+
+    Token names are used instead of their integer IDs because IDs are an
+    implementation detail. Each token is length-prefixed to prevent ambiguous
+    concatenations. Filenames and source ordering are included deterministically.
+    """
     digest = hashlib.sha256()
     for filename in sorted(sources):
-        tree = ast.parse(sources[filename], filename=filename)
-        normalized = ast.dump(_remove_docstrings(tree), include_attributes=False)
         digest.update(filename.encode("utf-8"))
         digest.update(b"\0")
-        digest.update(normalized.encode("utf-8"))
+        tokens = tokenize.generate_tokens(io.StringIO(sources[filename]).readline)
+        for token in tokens:
+            token_name = tokenize.tok_name[token.type]
+            if token_name in _IGNORED_TOKEN_NAMES:
+                continue
+            value = token.string
+            digest.update(token_name.encode("ascii"))
+            digest.update(b":")
+            digest.update(str(len(value)).encode("ascii"))
+            digest.update(b":")
+            digest.update(value.encode("utf-8"))
+            digest.update(b"\0")
         digest.update(b"\0")
     return "sha256:" + digest.hexdigest()
 
 
-def current_strategy_ast_hash() -> str:
+def current_strategy_source_hash() -> str:
+    """Return the normalized-source hash of strategy.py and indicators.py."""
     package = Path(__file__).resolve().parent
     sources = {
         name: (package / name).read_text(encoding="utf-8")
         for name in ("strategy.py", "indicators.py")
     }
-    return strategy_ast_hash(sources)
+    return strategy_source_hash(sources)
