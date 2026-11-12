@@ -352,6 +352,19 @@ class SignalLifecycleTests(unittest.TestCase):
                 run_once(config)
             self.assertEqual(final_sender.call_count, 0)
 
+    def test_missing_home_directory_requires_explicit_state_path(self):
+        env = {
+            "GOLD_TWELVE_DATA_API_KEY": "api",
+            "GOLD_TELEGRAM_BOT_TOKEN": "token",
+            "GOLD_TELEGRAM_CHAT_ID": "chat",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("gold_signal.config.Path.home", side_effect=RuntimeError("home unavailable")),
+        ):
+            with self.assertRaisesRegex(ValueError, "GOLD_SIGNAL_STATE_FILE"):
+                Config.from_env()
+
     def test_freshness_grace_is_configurable_and_validated(self):
         env = {
             "GOLD_TWELVE_DATA_API_KEY": "api",
