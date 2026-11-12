@@ -42,6 +42,7 @@ class SignalLifecycleTests(unittest.TestCase):
         with (
             patch("gold_signal.service.fetch_closed_candles", return_value=candles),
             patch("gold_signal.service.detect_signals", return_value=[self.signal(candles[-1]["time"])]),
+            patch("gold_signal.service._signal_is_fresh", return_value=True),
             patch("gold_signal.service.format_signal", return_value="initial signal"),
             patch("gold_signal.service.send_telegram", return_value=100),
             patch("gold_signal.service.maybe_send_daily_quota_warning", return_value=False),
