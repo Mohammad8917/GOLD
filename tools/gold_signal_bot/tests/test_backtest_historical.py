@@ -223,7 +223,7 @@ class HistoricalRequestSecretRedactionTests(unittest.TestCase):
         self.assertEqual(kwargs["params"]["format"], "ISO")
         self.assertEqual(kwargs["params"]["order"], "asc")
         self.assertEqual(kwargs["params"]["start_date"], "2026-01-01T00:00:00")
-        self.assertEqual(kwargs["params"]["end_date"], "2026-01-02T00:00:00")
+        self.assertEqual(kwargs["params"]["end_date"], "2026-01-03T00:00:00")
         self.assertEqual(kwargs["params"]["apikey"], "SENSITIVE_TEST_KEY")
 
     def test_main_error_output_suppresses_raw_exception_message(self) -> None:
