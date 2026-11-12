@@ -469,8 +469,7 @@ class SignalGenerationTests(unittest.TestCase):
             closes = base + [base[-1] + 3, base[-1] + 1]
         else:
             closes = [2600.0] * 60
-        # Keep the newest fixture candle recent enough for the live-send tests.
-        start = datetime.now(timezone.utc) - timedelta(minutes=15 * (count - 1) + 16)
+        start = datetime(2026, 11, 10, 0, 0, tzinfo=timezone.utc)
         bars = []
         for i, close in enumerate(closes):
             open_price = close - 0.1
