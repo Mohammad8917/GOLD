@@ -65,3 +65,25 @@ These checks validate offline code paths and selected crash boundaries. They do 
 ## Secret handling
 
 Real values are deliberately absent from Git. Use local .env for Windows operation and GitHub Actions repository secrets for manual workflows. Never paste API keys, Telegram tokens, or chat IDs into chat, source code, logs, fixtures, or commits. Generated reports/ are gitignored.
+
+## 5. PR #13 — Network and quota resilience (merged)
+
+- PR #13 (`fix/network-and-quota-resilience`) merged into `main` on 2026-11-12.
+- Merge commit: `e5dfa17bef3f0e8648d05ea5d195719e81158921`.
+- Changes: retry daily quota inspection after transient network failures; close Twelve Data and Telegram HTTP responses; close internally-created sessions while preserving caller-owned sessions; keep Telegram HTTP 408/425/429 delivery outcomes recoverable through the durable WAL without a tight retry loop.
+- Regression tests cover quota timeout recovery, HTTP resource cleanup, Telegram 429 handling, and next-cycle recovery. PR CI passed 183 tests and mutation audit.
+- Post-merge `main` CI run #198 (run ID `43227118195`) completed successfully: 8/8 jobs, Python 3.11–3.14 × Ubuntu/Windows. Windows PowerShell syntax validation passed.
+- Windows 11 staging procedure: `tools/gold_signal_bot/STABILITY_TEST.md`.
+
+## Current release gate (after PR #13)
+
+- [x] PR #13 merged; post-merge main CI green (8/8).
+- [x] Python 3.11, 3.12, 3.13 and 3.14 tested on Ubuntu and Windows in CI.
+- [x] Network/quota retry and HTTP resource cleanup regression tests included.
+- [x] Windows 24–72-hour staging instructions documented.
+- [ ] On the target Windows 11 host, configure local secrets and pass the full offline test suite.
+- [ ] Confirm live Twelve Data XAU/USD feed and actual Telegram connectivity.
+- [ ] Complete and review the 72-hour stability CSV/log/state/WAL evidence.
+- [ ] Run real-feed backtest and parity workflow; review artifacts before relying on signals.
+
+Passing CI is not equivalent to passing live acceptance. Keep the bot signal-only; never add broker/exchange credentials or order execution.
