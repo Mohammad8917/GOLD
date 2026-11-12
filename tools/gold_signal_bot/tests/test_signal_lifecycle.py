@@ -162,7 +162,7 @@ class SignalLifecycleTests(unittest.TestCase):
             ):
                 result = run_once(config)
 
-            self.assertEqual(result, "lifecycle_updated")
+            self.assertEqual(result, "sent_catchup")
             self.assertEqual(sender.call_count, 1)
             self.assertIn("SL", sender.call_args.args[1])
             record = self.only_record(config)
