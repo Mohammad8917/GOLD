@@ -166,7 +166,10 @@ def fetch_closed_candles(config: Config, session: requests.Session | None = None
             )
         if error_code.isdigit():
             raise RuntimeError(f"Twelve Data returned an error (code {error_code[:6]})")
-        raise RuntimeError("Twelve Data returned an error response")
+        provider_message = payload.get("message")
+        if isinstance(provider_message, str) and "rate limit" in provider_message.lower():
+            raise RuntimeError("Twelve Data rate limit error (provider details suppressed)")
+        raise RuntimeError("Twelve Data error response (provider details suppressed)")
     values = payload.get("values")
     if not isinstance(values, list) or not values:
         raise RuntimeError("Twelve Data returned no XAU/USD candles")
