@@ -6,7 +6,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
 from gold_signal.config import seconds_until_next_candle_close
 from gold_signal.service import _signal_is_fresh
 
