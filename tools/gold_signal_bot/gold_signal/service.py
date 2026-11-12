@@ -29,6 +29,20 @@ def _signal_id(signal: dict, timeframe: str) -> str:
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
+def _signal_is_fresh(candle_time: datetime, timeframe: str, *, now: datetime | None = None,
+                     grace_seconds: int = 300) -> bool:
+    """A signal may be announced only within five minutes after its candle closes."""
+    if candle_time.tzinfo is None:
+        candle_time = candle_time.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        raise ValueError("Freshness clock must be timezone-aware")
+    interval = TIMEFRAMES[timeframe][1]
+    close_at = candle_time + timedelta(seconds=interval)
+    age = (current.astimezone(timezone.utc) - close_at.astimezone(timezone.utc)).total_seconds()
+    return 0 <= age <= grace_seconds
+
+
 def _redact_error(error: Exception, config: Config) -> str:
     value = str(error)
     for secret in (getattr(config, "api_key", ""), getattr(config, "bot_token", "")):
@@ -55,6 +69,14 @@ def _recover_startup_sending(outbox: dict[str, dict], state_path) -> None:
     changed = False
     now = datetime.now(timezone.utc).isoformat()
     for key, record in outbox.items():
+        if record.get("stale_notice_status") == "SENDING":
+            record["stale_notice_status"] = "UNKNOWN"
+            record["stale_notice_updated_at"] = now
+            record["stale_notice_error"] = record.get("stale_notice_error") or "Process stopped while stale summary was SENDING; Telegram outcome is unknown"
+            record.setdefault("recovery_history", []).append({"at": now, "from": "STALE_NOTICE_SENDING", "to": "STALE_NOTICE_UNKNOWN", "decision": "startup recovery; retry summary with [RECOVERY RETRY]"})
+            changed = True
+            LOG.error("Startup recovery: stale summary group %s has ambiguous delivery", record.get("stale_notice_group"))
+
         if record.get("status") == "SENDING":
             record["status"] = "UNKNOWN"
             record["updated_at"] = now
@@ -105,6 +127,82 @@ def _recover_startup_sending(outbox: dict[str, dict], state_path) -> None:
     if changed:
         write_outbox(state_path, outbox)
 
+
+
+def _process_stale_notice_groups(config: Config, outbox: dict[str, dict], session: requests.Session | None) -> int:
+    """Send one durable, silent summary per evaluation-candle boundary."""
+    groups: dict[str, list[tuple[str, dict]]] = {}
+    for key, record in outbox.items():
+        group = record.get("stale_notice_group")
+        if group and record.get("stale_notice_status") in {"PENDING", "UNKNOWN", "FAILED"}:
+            groups.setdefault(str(group), []).append((key, record))
+
+    sent = 0
+    for group, members in sorted(groups.items()):
+        cursor_raw = read_state(config.state_file)
+        if not cursor_raw or parse_bar_time(cursor_raw) < parse_bar_time(group):
+            continue  # wait until the whole catch-up boundary has been processed
+
+        stamps = [parse_bar_time(record["signal_timestamp"]) for _, record in members]
+        first_stamp, last_stamp = min(stamps), max(stamps)
+        count = len(members)
+        timeframe = str(members[0][1].get("timeframe", config.timeframe))
+        message = (
+            "⚠️ <b>GOLD / XAUUSD — STALE SIGNALS SKIPPED</b>\n"
+            f"<b>تعداد:</b> {count} سیگنال\n"
+            f"<b>بازه کندل‌ها:</b> {first_stamp:%Y-%m-%d %H:%M} تا {last_stamp:%Y-%m-%d %H:%M} UTC\n"
+            f"<b>تایم‌فریم:</b> {timeframe}\n\n"
+            "این سیگنال‌های قدیمی ارسال نشدند؛ هیچ سفارش یا معامله‌ای اجرا نشده است."
+        )
+        if any(record.get("stale_notice_status") == "UNKNOWN" for _, record in members):
+            message = "<b>[RECOVERY RETRY]</b>\n" + message
+
+        now = datetime.now(timezone.utc).isoformat()
+        for _, record in members:
+            record["stale_notice_status"] = "SENDING"
+            record["stale_notice_attempt_count"] = int(record.get("stale_notice_attempt_count", 0)) + 1
+            record["stale_notice_updated_at"] = now
+            record["stale_notice_error"] = None
+        write_outbox(config.state_file, outbox)
+
+        try:
+            message_id = send_telegram(config, message, session=session, disable_notification=True)
+            if type(message_id) is not int or message_id <= 0:
+                raise RuntimeError("Stale summary send succeeded without a valid Telegram message_id")
+        except Exception as exc:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            definitive = (
+                isinstance(exc, RuntimeError) and str(exc).startswith("Telegram rejected")
+            ) or (
+                isinstance(exc, requests.HTTPError) and isinstance(status_code, int)
+                and 400 <= status_code < 500 and status_code not in {408, 425, 429}
+            )
+            status = "FAILED" if definitive else "UNKNOWN"
+            error = _redact_error(exc, config)
+            for key, record in members:
+                record["stale_notice_status"] = status
+                record["stale_notice_error"] = error
+                record["stale_notice_updated_at"] = datetime.now(timezone.utc).isoformat()
+                record.setdefault("recovery_history", []).append({
+                    "at": record["stale_notice_updated_at"], "from": "STALE_NOTICE_SENDING",
+                    "to": "STALE_NOTICE_" + status,
+                    "decision": "retry summary; signal cursor remains committed",
+                })
+                outbox[key] = record
+            write_outbox(config.state_file, outbox)
+            LOG.error("Stale summary group %s failed: %s", group, error)
+            continue  # informational notice must not block signal catch-up
+
+        now = datetime.now(timezone.utc).isoformat()
+        for key, record in members:
+            record["stale_notice_status"] = "SENT"
+            record["stale_notice_message_id"] = message_id
+            record["stale_notice_updated_at"] = now
+            outbox[key] = record
+        write_outbox(config.state_file, outbox)
+        sent += 1
+        LOG.info("Delivered one silent stale summary for %d skipped signals at boundary %s", count, group)
+    return sent
 
 def _trim_sent_history(outbox: dict[str, dict], limit: int = 1000) -> None:
     """Bound the audit journal while never deleting an unfinished delivery."""
@@ -342,7 +440,7 @@ def _process_due_lifecycle(
             recovery = notice_status == "UNKNOWN"
             message = str(event_record["message"])
             if recovery:
-                message = "<b>[RECOVERY RETRY]</b>\\n" + message
+                message = "<b>[RECOVERY RETRY]</b>\n" + message
 
             notice = {
                 "event": event,
@@ -445,6 +543,7 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
             raise RuntimeError("Insufficient candle history for signal evaluation")
 
         candle_index_by_time = {bar["time"]: index for index, bar in enumerate(candles)}
+        latest_time = candles[-1]["time"]
         cursor_raw = read_state(config.state_file)
         outbox = read_outbox(config.state_file)
         # This is the only permitted SENDING -> UNKNOWN transition point.
@@ -480,10 +579,13 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
                 config, candles, outbox, len(candles) - 1, session,
                 index_by_time=candle_index_by_time,
             )
+            stale_notices = _process_stale_notice_groups(config, outbox, session)
             if lifecycle_delivered:
                 return "lifecycle_updated"
             if expiry_delivered:
                 return "expired"
+            if stale_notices:
+                return "stale_notice_sent"
             LOG.info("No new confirmed GOLD signal on %s", config.timeframe)
             return "no_signal"
         if start_index < INDICATOR_WARMUP_BARS:
@@ -532,6 +634,37 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
                         f"WAL invariant violation: signal {key} is SENDING outside startup recovery"
                     )
                 recovery = bool(record and record.get("status") == "UNKNOWN")
+
+                # Catch-up candles advance the cursor and lifecycle WAL, but
+                # historical entries are never announced as new signals.
+                if not _signal_is_fresh(stamp, config.timeframe, grace_seconds=getattr(config, "freshness_grace_seconds", 300)):
+                    if not record or record.get("status") != "SENT":
+                        now_iso = datetime.now(timezone.utc).isoformat()
+                        outbox[key] = {
+                            "signal_id": key,
+                            "signal_timestamp": stamp.isoformat(),
+                            "symbol": data.get("symbol", "XAU/USD"),
+                            "timeframe": config.timeframe,
+                            "side": data.get("side"),
+                            "entry": data.get("entry"),
+                            "stop_loss": data.get("stop_loss"),
+                            "take_profit_1": data.get("take_profit_1"),
+                            "take_profit_2": data.get("take_profit_2"),
+                            "status": "SKIPPED_STALE",
+                            "lifecycle_status": "CLOSED_STALE",
+                            "closed_at": now_iso,
+                            "close_reason": "Historical catch-up signal; never delivered",
+                            "stale_notice_group": latest_time.isoformat(),
+                            "stale_notice_status": "PENDING",
+                            "stale_notice_attempt_count": 0,
+                            "stale_notice_message_id": None,
+                            "stale_notice_error": None,
+                            "updated_at": now_iso,
+                        }
+                        write_outbox(config.state_file, outbox)
+                    write_state(config.state_file, stamp)
+                    processed += 1
+                    continue
 
                 if not record:
                     message = format_signal(data, config.timeframe)
@@ -664,8 +797,11 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
                 write_state(config.state_file, stamp)
             processed += 1
 
+        stale_notices = _process_stale_notice_groups(config, outbox, session)
         if delivered:
             return "sent" if processed == 1 else "sent_catchup"
+        if stale_notices:
+            return "stale_notice_sent"
         if processed:
             return "processed_no_signal"
         LOG.info("No new confirmed GOLD signal on %s", config.timeframe)

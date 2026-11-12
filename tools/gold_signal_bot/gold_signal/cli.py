@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+from dataclasses import replace
 import os
 import signal
 import threading
@@ -11,7 +12,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from .config import Config
+from .config import Config, TIMEFRAMES, seconds_until_next_candle_close
 from .quota import QuotaLimitError
 from .service import run_once
 from .telegram import send_telegram
@@ -26,6 +27,55 @@ def _redact(message: Any, config: Config) -> str:
             value = value.replace(secret, "[REDACTED]")
     return value[:500]
 
+
+def _run_current_candle_with_retry(config: Config, stop_event: threading.Event) -> str:
+    """Retry a not-yet-published current candle within a bounded request budget.
+
+    The outer budget is five market-data requests total: internal HTTP retries
+    are set to one for these calls, so retries cannot multiply unexpectedly.
+    """
+    import time
+
+    interval = TIMEFRAMES[config.timeframe][1]
+    now_epoch = time.time()
+    candle_close_epoch = int(now_epoch // interval) * interval
+    retry_deadline = min(candle_close_epoch + 300, candle_close_epoch + interval)
+    single_request_config = replace(config, retry_attempts=1)
+    last_error: Exception | None = None
+
+    for attempt in range(5):
+        if stop_event.is_set():
+            return "stopped"
+        try:
+            result = run_once(single_request_config)
+            if result != "no_signal":
+                return result
+            # "no_signal" means the processing cursor already equals the latest
+            # provider candle. At the just-closed boundary this can mean the
+            # provider has not published the new candle yet.
+            last_error = None
+        except QuotaLimitError:
+            raise
+        except Exception as exc:
+            error_text = str(exc).lower()
+            if any(marker in error_text for marker in (
+                "401", "403", "authentication", "permission denied",
+                "invalid or missing", "access is forbidden",
+            )):
+                raise
+            last_error = exc
+
+        if attempt == 4 or stop_event.is_set():
+            break
+        remaining = retry_deadline - time.time()
+        if remaining <= 0:
+            break
+        if stop_event.wait(min(8.0, remaining)):
+            return "stopped"
+
+    if last_error is not None:
+        raise last_error
+    return "no_signal"
 
 def main() -> int:
     load_dotenv(ROOT / ".env")
@@ -67,20 +117,37 @@ def main() -> int:
     signal.signal(signal.SIGINT, stop_handler)
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, stop_handler)
-    LOG.info("GOLD notifier started: XAU/USD, timeframe=%s, poll=%ss; signal-only mode",
-             config.timeframe, config.poll_seconds)
+    LOG.info("GOLD notifier started: XAU/USD, timeframe=%s; candle-close scheduling enabled", config.timeframe)
+    import time
+    last_heartbeat = time.monotonic()
+    connectivity_lost = False
     while not stop_event.is_set():
-        wait_seconds = config.poll_seconds
+        wait_seconds = seconds_until_next_candle_close(config.timeframe, offset_seconds=config.candle_close_offset_seconds)
         try:
-            run_once(config)
-        except QuotaLimitError as exc:
-            wait_seconds = int(exc.retry_after) + 1
-            LOG.warning(
-                "Market-data polling paused for %s quota window; retry in about %s seconds",
-                exc.window, wait_seconds,
+            _run_current_candle_with_retry(config, stop_event)
+            # Recompute after bounded retries; the pre-run delay is stale now.
+            wait_seconds = seconds_until_next_candle_close(
+                config.timeframe,
+                offset_seconds=config.candle_close_offset_seconds,
             )
+            if connectivity_lost or time.monotonic() - last_heartbeat >= 1800:
+                status = "connection restored" if connectivity_lost else "heartbeat: service alive"
+                try:
+                    message_id = send_telegram(config, f"GOLD bot: {status}; XAU/USD signal monitoring active.", disable_notification=True)
+                    if type(message_id) is not int or message_id <= 0:
+                        raise RuntimeError("Heartbeat returned no valid Telegram message_id")
+                    last_heartbeat = time.monotonic()
+                    connectivity_lost = False
+                except Exception as heartbeat_error:
+                    connectivity_lost = True
+                    LOG.warning("Heartbeat delivery unavailable: %s", _redact(heartbeat_error, config))
+        except QuotaLimitError as exc:
+            wait_seconds = min(int(exc.retry_after) + 1, 60)
+            connectivity_lost = True
+            LOG.warning("Market-data quota pause (%s); retry in %s seconds", exc.window, wait_seconds)
         except Exception as exc:
-            LOG.error("GOLD check failed; will retry next cycle: %s", _redact(exc, config))
-        # Event.wait sleeps once without polling and wakes immediately on SIGINT/SIGTERM.
-        stop_event.wait(wait_seconds)
+            LOG.error("GOLD check failed; retrying shortly: %s", _redact(exc, config))
+            connectivity_lost = True
+            wait_seconds = 60
+        stop_event.wait(max(1, wait_seconds))
     return 0

@@ -14,6 +14,23 @@ TIMEFRAMES = {
 DEFAULT_SIGNAL_TTL_CANDLES = 24  # 24 one-hour candles = one trading day
 
 
+def seconds_until_next_candle_close(timeframe: str, now=None, offset_seconds: int = 4) -> float:
+    """Seconds until shortly after the next UTC candle boundary."""
+    from datetime import datetime, timezone
+    if timeframe not in TIMEFRAMES:
+        raise ValueError(f"Unsupported timeframe for scheduling: {timeframe!r}")
+    if not 1 <= offset_seconds <= 30:
+        raise ValueError("Candle-close offset must be between 1 and 30 seconds")
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        raise ValueError("Scheduling timestamp must be timezone-aware")
+    interval = TIMEFRAMES[timeframe][1]
+    epoch = current.timestamp()
+    next_boundary = (int(epoch // interval) + 1) * interval
+    target = next_boundary + offset_seconds
+    return max(0.1, target - epoch)
+
+
 def default_signal_ttl_candles(timeframe: str) -> int:
     """Scale the one-day default to the selected candle interval."""
     if timeframe not in TIMEFRAMES:
@@ -38,6 +55,8 @@ class Config:
     stale_multiplier: float
     gap_multiplier: float
     signal_ttl_candles: int = DEFAULT_SIGNAL_TTL_CANDLES
+    candle_close_offset_seconds: int = 4
+    freshness_grace_seconds: int = 300
 
     @classmethod
     def from_env(cls, *, require_market_data: bool = True) -> "Config":
@@ -54,9 +73,17 @@ class Config:
         if timeframe not in TIMEFRAMES:
             raise ValueError(f"Unsupported GOLD_TIMEFRAME {timeframe!r}")
         interval_seconds = TIMEFRAMES[timeframe][1]
-        poll_seconds = int(os.getenv("GOLD_POLL_SECONDS", str(max(20, min(60, interval_seconds // 10)))))
+        # Retained for backwards-compatible config consumers; the daemon now sleeps
+        # until the next candle boundary instead of polling at a fixed interval.
+        poll_seconds = int(os.getenv("GOLD_POLL_SECONDS", "45"))
         if poll_seconds < 10:
             raise ValueError("GOLD_POLL_SECONDS must be at least 10")
+        close_offset = int(os.getenv("GOLD_CANDLE_CLOSE_OFFSET_SECONDS", "4"))
+        freshness_grace = int(os.getenv("GOLD_SIGNAL_FRESHNESS_GRACE_SECONDS", "300"))
+        if not 0 <= freshness_grace <= 86400:
+            raise ValueError("GOLD_SIGNAL_FRESHNESS_GRACE_SECONDS must be between 0 and 86400")
+        if not 1 <= close_offset <= 30:
+            raise ValueError("GOLD_CANDLE_CLOSE_OFFSET_SECONDS must be between 1 and 30")
         atr_multiplier = float(os.getenv("GOLD_RISK_ATR_MULTIPLIER", "1.5"))
         tp1_r = float(os.getenv("GOLD_TP1_R", "1.0"))
         tp2_r = float(os.getenv("GOLD_TP2_R", "2.0"))
@@ -80,13 +107,19 @@ class Config:
         if not all(math.isfinite(v) and v > 0 for v in (retry_base, stale_multiplier, gap_multiplier)):
             raise ValueError("Retry delay and candle validation multipliers must be finite positive numbers")
         state_value = os.getenv("GOLD_SIGNAL_STATE_FILE", "").strip()
-        state_file = (
-            Path(state_value).expanduser()
-            if state_value
-            else Path.home() / ".quantdinger_gold_signal_state.json"
-        )
+        if state_value:
+            state_file = Path(state_value).expanduser()
+        else:
+            try:
+                state_file = Path.home() / ".quantdinger_gold_signal_state.json"
+            except (RuntimeError, OSError) as exc:
+                raise ValueError(
+                    "Cannot determine the user home directory for GOLD state storage. "
+                    "Set GOLD_SIGNAL_STATE_FILE to an explicit writable file path "
+                    "(especially when running under Windows Task Scheduler or a service)."
+                ) from exc
         return cls(api_key, bot_token, chat_id, timeframe, poll_seconds,
                    atr_multiplier, tp1_r, tp2_r, state_file,
                    max(5, int(os.getenv("GOLD_HTTP_TIMEOUT", "20"))),
                    retry_attempts, retry_base, stale_multiplier, gap_multiplier,
-                   signal_ttl_candles)
+                   signal_ttl_candles, close_offset, freshness_grace)
