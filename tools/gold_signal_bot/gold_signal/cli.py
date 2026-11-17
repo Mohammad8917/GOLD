@@ -28,6 +28,13 @@ def _redact(message: Any, config: Config) -> str:
     return value[:500]
 
 
+def _quota_pause_seconds(error: QuotaLimitError) -> int:
+    """Wait for the provider's full minute/day reset window; remain Ctrl+C interruptible."""
+    import math
+
+    return max(1, math.ceil(error.retry_after))
+
+
 def _run_current_candle_with_retry(config: Config, stop_event: threading.Event) -> str:
     """Retry a not-yet-published current candle within a bounded request budget.
 
@@ -142,7 +149,7 @@ def main() -> int:
                     connectivity_lost = True
                     LOG.warning("Heartbeat delivery unavailable: %s", _redact(heartbeat_error, config))
         except QuotaLimitError as exc:
-            wait_seconds = min(int(exc.retry_after) + 1, 60)
+            wait_seconds = _quota_pause_seconds(exc)
             connectivity_lost = True
             LOG.warning("Market-data quota pause (%s); retry in %s seconds", exc.window, wait_seconds)
         except Exception as exc:
