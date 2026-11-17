@@ -323,7 +323,7 @@ def convert_ticks(
             "candle_boundary": "epoch-aligned UTC intervals; [start, end)",
             "price_policy": "bid, ask, and per-tick midpoint OHLC are all retained; no basis selected for strategy use",
             "spread_policy": "no filtering; mean/max and counts above 5 and 10 price units are recorded",
-            "gap_policy": "no synthetic candles; missing interval buckets and within-bar tick gaps are reported",
+            "gap_policy": "no synthetic candles; missing interval buckets, within-bar tick gaps, and dataset-wide inter-tick gaps are reported",
             "duplicate_policy": "strictly increasing timestamps required; duplicates and out-of-order ticks fail conversion",
             "tick_count_spread_gt_5": spread_gt_5,
             "tick_count_spread_gt_10": spread_gt_10,
