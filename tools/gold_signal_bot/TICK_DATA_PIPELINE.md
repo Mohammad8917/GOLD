@@ -23,8 +23,10 @@ does not feed the live signal service or the existing Twelve Data backtest.
 - No price basis is selected for strategy use in this stage.
 - No wide-spread ticks are filtered. Each bar records spread mean/max and tick
   counts above 5 and 10 price units.
-- Empty intervals are not synthesized. Missing bucket counts and within-bar
-  tick-gap counts above 1s, 5s and 60s are reported.
+- Empty intervals are not synthesized. Missing bucket counts, within-bar
+  tick-gap counts above 1s, 5s and 60s, and dataset-wide inter-tick gap metrics
+  (including gaps crossing candle boundaries) are reported. First/last tick
+  timestamps are included in the report.
 - Conversion fails closed on malformed records, crossed/non-positive prices,
   duplicate/out-of-order timestamps, or optional date-bound violations.
 - Existing outputs are not overwritten unless \`--overwrite\` is explicitly set.
