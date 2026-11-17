@@ -6,7 +6,7 @@ does not feed the live signal service or the existing Twelve Data backtest.
 
 ## Input contract
 
-- CSV columns, in order: \`timestamp,askPrice,bidPrice\`
+- CSV columns, in order: `timestamp,askPrice,bidPrice`
 - Timestamp: Unix milliseconds
 - Input order: strictly increasing; duplicate or out-of-order timestamps fail
 - Prices: finite, positive, and ask must be greater than or equal to bid
@@ -15,7 +15,7 @@ does not feed the live signal service or the existing Twelve Data backtest.
 ## Conversion policy
 
 - Candle boundaries are epoch-aligned UTC intervals with half-open windows
-  \`[start, end)\`.
+  `[start, end)`.
 - One streaming pass creates 1min, 5min, 15min and 1h files.
 - Each output bar retains bid OHLC, ask OHLC, and midpoint OHLC. Midpoint is
   calculated per tick before OHLC aggregation; it is not an average of bid/ask
@@ -29,24 +29,24 @@ does not feed the live signal service or the existing Twelve Data backtest.
   timestamps are included in the report.
 - Conversion fails closed on malformed records, crossed/non-positive prices,
   duplicate/out-of-order timestamps, or optional date-bound violations.
-- Existing outputs are not overwritten unless \`--overwrite\` is explicitly set.
+- Existing outputs are not overwritten unless `--overwrite` is explicitly set.
 
 ## Windows PowerShell command
 
 Run from the root of the GOLD repository after the converter PR is reviewed
 and approved. The raw CSV remains in its existing location.
 
-\`\`\`powershell
-py -3.13 tools\\gold_signal_bot\\convert_ticks_to_ohlc.py --input "data\\historical\\raw\\XAUUSD_FULLYEAR_2025-11-14_TO_2026-11-14\\xauusd-tick-2025-11-14-2026-11-14.csv" --output-dir "data\\historical\\derived\\XAUUSD_FULLYEAR_2025-11-14_TO_2026-11-14" --expected-start "2025-11-14T00:00:00Z" --expected-end-exclusive "2026-11-14T00:00:00Z"
-\`\`\`
+```powershell
+py -3.13 tools\gold_signal_bot\convert_ticks_to_ohlc.py --input "data\historical\raw\XAUUSD_FULLYEAR_2025-11-14_TO_2026-11-14\xauusd-tick-2025-11-14-2026-11-14.csv" --output-dir "data\historical\derived\XAUUSD_FULLYEAR_2025-11-14_TO_2026-11-14" --expected-start "2025-11-14T00:00:00Z" --expected-end-exclusive "2026-11-14T00:00:00Z"
+```
 
 Expected outputs:
 
-- \`xauusd-tick-2025-11-14-2026-11-14_1min_ohlc.csv\`
-- \`xauusd-tick-2025-11-14-2026-11-14_5min_ohlc.csv\`
-- \`xauusd-tick-2025-11-14-2026-11-14_15min_ohlc.csv\`
-- \`xauusd-tick-2025-11-14-2026-11-14_1h_ohlc.csv\`
-- \`xauusd-tick-2025-11-14-2026-11-14_conversion_report.json\`
+- `xauusd-tick-2025-11-14-2026-11-14_1min_ohlc.csv`
+- `xauusd-tick-2025-11-14-2026-11-14_5min_ohlc.csv`
+- `xauusd-tick-2025-11-14-2026-11-14_15min_ohlc.csv`
+- `xauusd-tick-2025-11-14-2026-11-14_1h_ohlc.csv`
+- `xauusd-tick-2025-11-14-2026-11-14_conversion_report.json`
 
 The report records input bytes/record count, bar counts, missing buckets,
 spread/gap metrics, and explicit non-approval for strategy/backtest use.
