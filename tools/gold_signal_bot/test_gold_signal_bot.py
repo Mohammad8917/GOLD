@@ -646,7 +646,8 @@ class RunOnceTests(unittest.TestCase):
                       Path(folder) / "state.json", 5, 2, 0.01, 3.0, 1.5)
 
     def make_candles(self, count=201):
-        start = datetime(2026, 11, 10, 0, 0, tzinfo=timezone.utc)
+        # Keep the newest fixture candle recent enough for live-send tests.
+        start = datetime.now(timezone.utc) - timedelta(minutes=15 * (count - 1) + 16)
         return [{"time": start + timedelta(minutes=15*i), "open": 2600.0,
                  "high": 2602.0, "low": 2598.0, "close": 2601.0}
                 for i in range(count)]

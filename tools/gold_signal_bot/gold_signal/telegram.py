@@ -49,6 +49,8 @@ def send_telegram(
     config: Config,
     message: str,
     session: requests.Session | None = None,
+    *,
+    disable_notification: bool = False,
 ) -> int | None:
     """Send once and return Telegram's message_id when the API confirms success.
 
@@ -65,6 +67,7 @@ def send_telegram(
                 "text": message,
                 "parse_mode": "HTML",
                 "disable_web_page_preview": "true",
+                "disable_notification": "true" if disable_notification else "false",
             },
             timeout=config.http_timeout,
         )

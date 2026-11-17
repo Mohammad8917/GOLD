@@ -14,7 +14,7 @@ from typing import Iterator
 LOG = logging.getLogger("gold_signal_bot")
 WAL_VERSION = 1
 _SIGNAL_ID_RE = re.compile(r"^[0-9a-f]{64}$")
-_VALID_STATUSES = {"PENDING", "SENDING", "UNKNOWN", "FAILED", "SENT"}
+_VALID_STATUSES = {"PENDING", "SENDING", "UNKNOWN", "FAILED", "SENT", "SKIPPED_STALE"}
 
 
 def _atomic_json_write(path: Path, value: dict) -> None:

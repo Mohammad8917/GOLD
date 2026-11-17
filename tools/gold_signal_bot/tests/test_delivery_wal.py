@@ -33,7 +33,8 @@ STRATEGY_VERSION = "ema20-ema50-rsi14-atr14-v1"
 
 
 def make_bars(count: int = 202) -> list[dict]:
-    start = datetime(2026, 11, 10, tzinfo=timezone.utc)
+    # Keep the fixture's newest candle inside the live-signal grace window.
+    start = datetime.now(timezone.utc) - timedelta(minutes=15 * (count - 1) + 16)
     return [
         {
             "time": start + timedelta(minutes=15 * index),
@@ -123,6 +124,24 @@ class DeliveryWalTests(unittest.TestCase):
             format_signal=lambda *_args, **_kwargs: "test signal message",
         )
 
+    def test_skipped_stale_is_a_valid_durable_wal_status(self):
+        key = signal_key(self.signal)
+        record = {
+            "signal_id": key,
+            "signal_timestamp": self.signal["candle_time"].isoformat(),
+            "symbol": "XAU/USD",
+            "timeframe": "15min",
+            "status": "SKIPPED_STALE",
+            "attempt_count": 0,
+            "message": "historical signal not announced",
+            "telegram_message_id": None,
+            "last_error": None,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "lifecycle_status": "CLOSED_STALE",
+        }
+        write_outbox(self.state_path, {key: record})
+        self.assertEqual(read_outbox(self.state_path)[key]["status"], "SKIPPED_STALE")
+
     def test_ambiguous_timeout_keeps_cursor_and_retries_with_visible_marker(self):
         accepted_by_telegram = []
 
@@ -182,6 +201,108 @@ class DeliveryWalTests(unittest.TestCase):
         self.assertTrue(sender.call_args.args[1].startswith("<b>[RECOVERY RETRY]</b>"))
         self.assertTrue(any("status is UNKNOWN" in line for line in captured.output))
         self.assertTrue(any("decision: retry" in line for line in captured.output))
+
+    def test_stale_unknown_delivery_is_audited_but_never_retried_as_trade_alert(self):
+        key = signal_key(self.signal)
+        prior_error = {
+            "signal_id": key,
+            "timestamp": self.signal["candle_time"].isoformat(),
+            "at": datetime.now(timezone.utc).isoformat(),
+            "error": "previous delivery outcome was ambiguous",
+        }
+        prior_recovery = {
+            "at": datetime.now(timezone.utc).isoformat(),
+            "from": "SENDING",
+            "to": "UNKNOWN",
+            "decision": "startup recovery; retry with [RECOVERY RETRY]",
+        }
+        write_outbox(self.state_path, {
+            key: {
+                "signal_id": key,
+                "signal_timestamp": self.signal["candle_time"].isoformat(),
+                "symbol": "XAU/USD",
+                "timeframe": "15min",
+                "status": "UNKNOWN",
+                "attempt_count": 1,
+                "message": "THIS TRADE SIGNAL MUST NEVER BE RETRIED",
+                "telegram_message_id": None,
+                "last_error": "previous delivery outcome was ambiguous",
+                "error_history": [prior_error],
+                "recovery_history": [prior_recovery],
+                "lifecycle_status": "ACTIVE",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        })
+
+        with self.run_with_signal(), patch(
+            "gold_signal.service._signal_is_fresh", return_value=False,
+        ), patch(
+            "gold_signal.service.send_telegram", new=mock_send_success(995),
+        ) as sender:
+            result = run_once(self.config)
+
+        self.assertEqual(result, "stale_notice_sent")
+        self.assertEqual(sender.call_count, 1)
+        message = sender.call_args.args[1]
+        self.assertIn("STALE SIGNALS SKIPPED", message)
+        self.assertNotIn("THIS TRADE SIGNAL MUST NEVER BE RETRIED", message)
+        self.assertNotIn("[RECOVERY RETRY]", message)
+        self.assertIn("نتیجه ارسال قبلی نامشخص", message)
+        self.assertTrue(sender.call_args.kwargs["disable_notification"])
+
+        stale = read_outbox(self.state_path)[key]
+        self.assertEqual(stale["status"], "SKIPPED_STALE")
+        self.assertEqual(stale["delivery_status_before_stale"], "UNKNOWN")
+        self.assertEqual(stale["attempt_count"], 1)
+        self.assertEqual(stale["message"], "THIS TRADE SIGNAL MUST NEVER BE RETRIED")
+        self.assertEqual(stale["last_error"], "previous delivery outcome was ambiguous")
+        self.assertEqual(stale["error_history"], [prior_error])
+        self.assertEqual(stale["recovery_history"][0], prior_recovery)
+        self.assertEqual(stale["lifecycle_status"], "CLOSED_STALE")
+        self.assertEqual(stale["stale_notice_status"], "SENT")
+        self.assertEqual(stale["stale_notice_message_id"], 995)
+
+    def test_stale_failed_delivery_keeps_definitive_error_history(self):
+        key = signal_key(self.signal)
+        prior_error = {
+            "signal_id": key,
+            "timestamp": self.signal["candle_time"].isoformat(),
+            "at": datetime.now(timezone.utc).isoformat(),
+            "error": "Telegram definitive rejection",
+        }
+        write_outbox(self.state_path, {
+            key: {
+                "signal_id": key,
+                "signal_timestamp": self.signal["candle_time"].isoformat(),
+                "symbol": "XAU/USD",
+                "timeframe": "15min",
+                "status": "FAILED",
+                "attempt_count": 1,
+                "message": "original signal message",
+                "telegram_message_id": None,
+                "last_error": "Telegram definitive rejection",
+                "error_history": [prior_error],
+                "recovery_history": [],
+                "lifecycle_status": "ACTIVE",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        })
+
+        with self.run_with_signal(), patch(
+            "gold_signal.service._signal_is_fresh", return_value=False,
+        ), patch(
+            "gold_signal.service._process_stale_notice_groups", return_value=0,
+        ), patch("gold_signal.service.send_telegram") as sender:
+            result = run_once(self.config)
+
+        self.assertEqual(result, "processed_no_signal")
+        sender.assert_not_called()
+        stale = read_outbox(self.state_path)[key]
+        self.assertEqual(stale["status"], "FAILED")
+        self.assertEqual(stale["last_error"], "Telegram definitive rejection")
+        self.assertEqual(stale["error_history"], [prior_error])
+        self.assertEqual(stale["lifecycle_status"], "CLOSED_STALE")
+        self.assertTrue(stale["stale_notice_group"])
 
     def test_durable_sent_record_advances_cursor_without_resending(self):
         key = signal_key(self.signal)
