@@ -37,7 +37,7 @@ Run from the root of the GOLD repository after the converter PR is reviewed
 and approved. The raw CSV remains in its existing location.
 
 ```powershell
-py -3.13 tools\gold_signal_bot\convert_ticks_to_ohlc.py --input "data\historical\raw\XAUUSD_FULLYEAR_2025-11-14_TO_2026-11-14\xauusd-tick-2025-11-14-2026-11-14.csv" --output-dir "data\historical\derived\XAUUSD_FULLYEAR_2025-11-14_TO_2026-11-14" --expected-start "2025-11-14T00:00:00Z" --expected-end-exclusive "2026-11-14T00:00:00Z"
+py -3.13 tools\gold_signal_bot\convert_ticks_to_ohlc.py --input "data\historical\raw\XAUUSD_FULLYEAR_2025-11-14_TO_2026-11-14\xauusd-tick-2025-11-14-2026-11-14.csv" --output-dir "data\historical\derived\XAUUSD_FULLYEAR_2025-11-14_TO_2026-11-14" --expected-start "2025-11-14T00:00:00Z" --expected-end-exclusive "2026-11-14T00:00:00Z" --expected-records 92443061 --expected-bytes 2957270652
 ```
 
 Expected outputs:
@@ -48,7 +48,8 @@ Expected outputs:
 - `xauusd-tick-2025-11-14-2026-11-14_1h_ohlc.csv`
 - `xauusd-tick-2025-11-14-2026-11-14_conversion_report.json`
 
-The report records input bytes/record count, bar counts, missing buckets,
+The command also checks the previously validated input size (2,957,270,652
+bytes) and row count (92,443,061). The report records input bytes/record count, bar counts, missing buckets,
 spread/gap metrics, and explicit non-approval for strategy/backtest use.
 
 ## What this stage does not prove
