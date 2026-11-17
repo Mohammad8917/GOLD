@@ -200,6 +200,8 @@ def convert_ticks(
     timeframes: tuple[str, ...] = ("1min", "5min", "15min", "1h"),
     expected_start: str | None = None,
     expected_end_exclusive: str | None = None,
+    expected_records: int | None = None,
+    expected_bytes: int | None = None,
     overwrite: bool = False,
 ) -> dict:
     """Convert a chronological millisecond bid/ask CSV in one streaming pass."""
@@ -211,10 +213,17 @@ def convert_ticks(
     start_ms, end_ms = to_epoch_ms(expected_start), to_epoch_ms(expected_end_exclusive)
     if start_ms is not None and end_ms is not None and end_ms <= start_ms:
         raise ValueError("Expected end-exclusive timestamp must be after start.")
+    if expected_records is not None and expected_records < 1:
+        raise ValueError("Expected record count must be positive.")
+    if expected_bytes is not None and expected_bytes < 1:
+        raise ValueError("Expected input size must be positive.")
     input_path = input_path.resolve()
     output_dir = output_dir.resolve()
     if not input_path.is_file():
         raise FileNotFoundError("Input tick CSV does not exist.")
+    input_bytes = input_path.stat().st_size
+    if expected_bytes is not None and input_bytes != expected_bytes:
+        raise ValueError(f"Input byte size mismatch: expected {expected_bytes}, found {input_bytes}.")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     final_paths = {
@@ -298,6 +307,8 @@ def convert_ticks(
 
         if ticks == 0:
             raise ValueError("Input CSV contains no tick records.")
+        if expected_records is not None and ticks != expected_records:
+            raise ValueError(f"Input record count mismatch: expected {expected_records}, found {ticks}.")
         bars_by_timeframe: dict[str, int] = {}
         missing_by_timeframe: dict[str, int] = {}
         for tf, aggregator in aggregators.items():
@@ -314,8 +325,10 @@ def convert_ticks(
         report = {
             "status": "converted",
             "input_file": input_path.name,
-            "input_bytes": input_path.stat().st_size,
+            "input_bytes": input_bytes,
             "input_records": ticks,
+            "expected_input_bytes": expected_bytes,
+            "expected_input_records": expected_records,
             "first_tick_utc": epoch_ms_to_iso(first_timestamp),
             "last_tick_utc": epoch_ms_to_iso(previous_timestamp),
             "timestamp_unit": "unix_milliseconds",
@@ -369,6 +382,8 @@ def main() -> int:
                         default=["1min", "5min", "15min", "1h"])
     parser.add_argument("--expected-start", help="Optional UTC ISO timestamp, inclusive.")
     parser.add_argument("--expected-end-exclusive", help="Optional UTC ISO timestamp, exclusive.")
+    parser.add_argument("--expected-records", type=int, help="Optional exact input data-row count.")
+    parser.add_argument("--expected-bytes", type=int, help="Optional exact raw input file size in bytes.")
     parser.add_argument("--overwrite", action="store_true",
                         help="Replace existing derived outputs only; never changes the input file.")
     args = parser.parse_args()
@@ -378,6 +393,8 @@ def main() -> int:
             timeframes=tuple(args.timeframes),
             expected_start=args.expected_start,
             expected_end_exclusive=args.expected_end_exclusive,
+            expected_records=args.expected_records,
+            expected_bytes=args.expected_bytes,
             overwrite=args.overwrite,
         )
     except Exception as exc:
