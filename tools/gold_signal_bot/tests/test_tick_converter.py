@@ -99,6 +99,19 @@ class TickConverterTests(unittest.TestCase):
         self.assertEqual(set(report["bars_by_timeframe"]), {"1min", "5min", "15min", "1h"})
         self.assertTrue(all((self.output / name).is_file() for name in report["outputs"].values()))
 
+    def test_global_gap_metrics_include_gaps_across_candle_boundaries(self) -> None:
+        start = epoch_ms("2025-11-14T00:00:00Z")
+        self.write_ticks([
+            (start + 59_000, "101", "100"),
+            (start + 120_000, "102", "101"),
+        ])
+        report = convert_ticks(self.source, self.output, timeframes=("1min",))
+        metrics = report["global_intertick_gap_metrics"]
+        self.assertEqual(metrics["max_gap_ms"], 61_000)
+        self.assertEqual(metrics["gaps_gt_60s"], 1)
+        self.assertEqual(report["first_tick_utc"], "2025-11-14T00:00:59.000Z")
+        self.assertEqual(report["last_tick_utc"], "2025-11-14T00:02:00.000Z")
+
     def test_raw_input_hash_is_unchanged(self) -> None:
         start = epoch_ms("2025-11-14T00:00:00Z")
         self.write_ticks([(start, "101", "100")])
