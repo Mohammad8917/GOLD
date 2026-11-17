@@ -87,7 +87,7 @@ class Candle:
     last_mid: Decimal | None = None
 
     @classmethod
-    def start(cls, bucket_ms: int, bid: Decimal, ask: Decimal) -> "Candle":
+    def start(cls, bucket_ms: int, timestamp_ms: int, bid: Decimal, ask: Decimal) -> "Candle":
         mid = (bid + ask) / Decimal(2)
         candle = cls(
             start_ms=bucket_ms,
@@ -96,7 +96,7 @@ class Candle:
             ask_high=ask, ask_low=ask,
             mid_high=mid, mid_low=mid,
         )
-        candle.add(0, bid, ask, is_first=True)
+        candle.add(timestamp_ms, bid, ask, is_first=True)
         return candle
 
     def add(self, timestamp_ms: int, bid: Decimal, ask: Decimal,
@@ -165,7 +165,7 @@ class TimeframeAggregator:
     def push(self, timestamp_ms: int, bid: Decimal, ask: Decimal) -> dict | None:
         bucket = (timestamp_ms // self.interval_ms) * self.interval_ms
         if self.current is None:
-            self.current = Candle.start(bucket, bid, ask)
+            self.current = Candle.start(bucket, timestamp_ms, bid, ask)
             return None
         if bucket == self.current.start_ms:
             self.current.add(timestamp_ms, bid, ask)
