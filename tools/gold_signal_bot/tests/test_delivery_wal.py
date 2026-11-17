@@ -202,7 +202,7 @@ class DeliveryWalTests(unittest.TestCase):
         self.assertTrue(any("status is UNKNOWN" in line for line in captured.output))
         self.assertTrue(any("decision: retry" in line for line in captured.output))
 
-    def test_stale_unknown_delivery_is_preserved_and_retried_with_marker(self):
+    def test_stale_unknown_delivery_is_audited_but_never_retried_as_trade_alert(self):
         key = signal_key(self.signal)
         prior_error = {
             "signal_id": key,
@@ -224,7 +224,7 @@ class DeliveryWalTests(unittest.TestCase):
                 "timeframe": "15min",
                 "status": "UNKNOWN",
                 "attempt_count": 1,
-                "message": "original signal message",
+                "message": "THIS TRADE SIGNAL MUST NEVER BE RETRIED",
                 "telegram_message_id": None,
                 "last_error": "previous delivery outcome was ambiguous",
                 "error_history": [prior_error],
@@ -241,16 +241,26 @@ class DeliveryWalTests(unittest.TestCase):
         ) as sender:
             result = run_once(self.config)
 
-        self.assertEqual(result, "sent")
-        self.assertTrue(sender.call_args.args[1].startswith("<b>[RECOVERY RETRY]</b>"))
-        self.assertIn("original signal message", sender.call_args.args[1])
-        recovered = read_outbox(self.state_path)[key]
-        self.assertEqual(recovered["status"], "SENT")
-        self.assertEqual(recovered["attempt_count"], 2)
-        self.assertEqual(recovered["message"], "original signal message")
-        self.assertEqual(recovered["error_history"], [prior_error])
-        self.assertEqual(recovered["recovery_history"][0], prior_recovery)
-        self.assertEqual(recovered["telegram_message_id"], 995)
+        self.assertEqual(result, "stale_notice_sent")
+        self.assertEqual(sender.call_count, 1)
+        message = sender.call_args.args[1]
+        self.assertIn("STALE SIGNALS SKIPPED", message)
+        self.assertNotIn("THIS TRADE SIGNAL MUST NEVER BE RETRIED", message)
+        self.assertNotIn("[RECOVERY RETRY]", message)
+        self.assertIn("نتیجه ارسال قبلی نامشخص", message)
+        self.assertTrue(sender.call_args.kwargs["disable_notification"])
+
+        stale = read_outbox(self.state_path)[key]
+        self.assertEqual(stale["status"], "SKIPPED_STALE")
+        self.assertEqual(stale["delivery_status_before_stale"], "UNKNOWN")
+        self.assertEqual(stale["attempt_count"], 1)
+        self.assertEqual(stale["message"], "THIS TRADE SIGNAL MUST NEVER BE RETRIED")
+        self.assertEqual(stale["last_error"], "previous delivery outcome was ambiguous")
+        self.assertEqual(stale["error_history"], [prior_error])
+        self.assertEqual(stale["recovery_history"][0], prior_recovery)
+        self.assertEqual(stale["lifecycle_status"], "CLOSED_STALE")
+        self.assertEqual(stale["stale_notice_status"], "SENT")
+        self.assertEqual(stale["stale_notice_message_id"], 995)
 
     def test_stale_failed_delivery_keeps_definitive_error_history(self):
         key = signal_key(self.signal)
