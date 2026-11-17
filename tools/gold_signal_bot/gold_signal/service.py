@@ -694,7 +694,7 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
                         elif status == "FAILED":
                             # Preserve the definitive Telegram rejection and its
                             # error history; only close its signal lifecycle.
-                            stale_record.setdefault("lifecycle_status", "CLOSED_STALE")
+                            stale_record["lifecycle_status"] = "CLOSED_STALE"
                             stale_record.setdefault("closed_at", now_iso)
                             stale_record.setdefault(
                                 "close_reason",
