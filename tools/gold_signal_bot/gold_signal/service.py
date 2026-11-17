@@ -635,12 +635,29 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
                     )
                 recovery = bool(record and record.get("status") == "UNKNOWN")
 
-                # Catch-up candles advance the cursor and lifecycle WAL, but
-                # historical entries are never announced as new signals.
-                if not _signal_is_fresh(stamp, config.timeframe, grace_seconds=getattr(config, "freshness_grace_seconds", 300)):
-                    if not record or record.get("status") != "SENT":
-                        now_iso = datetime.now(timezone.utc).isoformat()
-                        outbox[key] = {
+                # Catch-up candles do not create new alerts. However, UNKNOWN means
+                # Telegram may already have accepted the original POST. Never erase
+                # that recoverable WAL entry merely because its candle is now stale.
+                signal_is_fresh = _signal_is_fresh(
+                    stamp, config.timeframe,
+                    grace_seconds=getattr(config, "freshness_grace_seconds", 300),
+                )
+                if not signal_is_fresh and recovery:
+                    if not isinstance(record.get("message"), str) or not record["message"]:
+                        raise RuntimeError(
+                            f"Ambiguous stale signal {key} has no original message; "
+                            "refusing to discard or reconstruct its delivery record."
+                        )
+                    LOG.warning(
+                        "Recovering signal %s with UNKNOWN Telegram outcome although its candle is stale; "
+                        "using visible [RECOVERY RETRY] marker",
+                        key,
+                    )
+
+                if not signal_is_fresh and not recovery:
+                    now_iso = datetime.now(timezone.utc).isoformat()
+                    if not record:
+                        stale_record = {
                             "signal_id": key,
                             "signal_timestamp": stamp.isoformat(),
                             "symbol": data.get("symbol", "XAU/USD"),
@@ -654,14 +671,44 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
                             "lifecycle_status": "CLOSED_STALE",
                             "closed_at": now_iso,
                             "close_reason": "Historical catch-up signal; never delivered",
-                            "stale_notice_group": latest_time.isoformat(),
-                            "stale_notice_status": "PENDING",
-                            "stale_notice_attempt_count": 0,
-                            "stale_notice_message_id": None,
-                            "stale_notice_error": None,
-                            "updated_at": now_iso,
                         }
-                        write_outbox(config.state_file, outbox)
+                    else:
+                        status = record.get("status")
+                        if status not in {"PENDING", "FAILED", "SKIPPED_STALE"}:
+                            raise RuntimeError(
+                                f"Unexpected WAL status {status!r} for stale signal {key}; "
+                                "refusing to overwrite its delivery history."
+                            )
+                        stale_record = record
+                        if status == "PENDING":
+                            stale_record["status"] = "SKIPPED_STALE"
+                            stale_record["lifecycle_status"] = "CLOSED_STALE"
+                            stale_record["closed_at"] = now_iso
+                            stale_record["close_reason"] = "Pending historical signal; never delivered"
+                            stale_record.setdefault("recovery_history", []).append({
+                                "at": now_iso,
+                                "from": "PENDING",
+                                "to": "SKIPPED_STALE",
+                                "decision": "stale catch-up; no Telegram request had started",
+                            })
+                        elif status == "FAILED":
+                            # Preserve the definitive Telegram rejection and its
+                            # error history; only close its signal lifecycle.
+                            stale_record.setdefault("lifecycle_status", "CLOSED_STALE")
+                            stale_record.setdefault("closed_at", now_iso)
+                            stale_record.setdefault(
+                                "close_reason",
+                                "Definitive Telegram rejection; signal became stale",
+                            )
+
+                    stale_record.setdefault("stale_notice_group", latest_time.isoformat())
+                    stale_record.setdefault("stale_notice_status", "PENDING")
+                    stale_record.setdefault("stale_notice_attempt_count", 0)
+                    stale_record.setdefault("stale_notice_message_id", None)
+                    stale_record.setdefault("stale_notice_error", None)
+                    stale_record["updated_at"] = now_iso
+                    outbox[key] = stale_record
+                    write_outbox(config.state_file, outbox)
                     write_state(config.state_file, stamp)
                     processed += 1
                     continue
