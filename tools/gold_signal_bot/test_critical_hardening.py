@@ -9,6 +9,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
 from gold_signal.config import seconds_until_next_candle_close
 from gold_signal.service import _signal_is_fresh
+from gold_signal.cli import _quota_pause_seconds
+from gold_signal.quota import QuotaLimitError
 
 
 class CriticalHardeningTests(unittest.TestCase):
@@ -34,6 +36,15 @@ class CriticalHardeningTests(unittest.TestCase):
         stamp = datetime(2026, 11, 12, 4, 0, tzinfo=timezone.utc)
         now = datetime(2026, 11, 12, 10, 15, tzinfo=timezone.utc)
         self.assertFalse(_signal_is_fresh(stamp, "15min", now=now))
+
+
+    def test_daily_quota_pause_honors_full_reset_window(self):
+        error = QuotaLimitError("daily", 7200.25)
+        self.assertEqual(_quota_pause_seconds(error), 7201)
+
+    def test_minute_quota_pause_honors_provider_retry_after(self):
+        error = QuotaLimitError("minute", 13.0)
+        self.assertEqual(_quota_pause_seconds(error), 13)
 
 
 if __name__ == "__main__":
