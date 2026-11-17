@@ -152,6 +152,26 @@ class TickConverterTests(unittest.TestCase):
                 expected_end_exclusive="2025-11-15T00:00:00Z",
             )
 
+    def test_expected_record_count_mismatch_fails_closed(self) -> None:
+        start = epoch_ms("2025-11-14T00:00:00Z")
+        self.write_ticks([(start, "101", "100")])
+        with self.assertRaisesRegex(ValueError, "record count mismatch"):
+            convert_ticks(
+                self.source, self.output, timeframes=("1min",),
+                expected_records=2,
+            )
+        self.assertFalse((self.output / "ticks_1min_ohlc.csv").exists())
+
+    def test_expected_file_size_mismatch_is_rejected_before_conversion(self) -> None:
+        start = epoch_ms("2025-11-14T00:00:00Z")
+        self.write_ticks([(start, "101", "100")])
+        with self.assertRaisesRegex(ValueError, "byte size mismatch"):
+            convert_ticks(
+                self.source, self.output, timeframes=("1min",),
+                expected_bytes=self.source.stat().st_size + 1,
+            )
+        self.assertFalse(self.output.exists())
+
     def test_output_is_not_overwritten_without_explicit_flag(self) -> None:
         start = epoch_ms("2025-11-14T00:00:00Z")
         self.write_ticks([(start, "101", "100")])
