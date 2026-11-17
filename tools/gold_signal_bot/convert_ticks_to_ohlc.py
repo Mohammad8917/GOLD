@@ -237,6 +237,11 @@ def convert_ticks(
     spread_gt_5 = 0
     spread_gt_10 = 0
     previous_timestamp: int | None = None
+    first_timestamp: int | None = None
+    global_max_tick_gap_ms = 0
+    global_tick_gaps_gt_1s = 0
+    global_tick_gaps_gt_5s = 0
+    global_tick_gaps_gt_60s = 0
     try:
         for tf, path in partial_paths.items():
             handle = path.open("w", newline="", encoding="utf-8")
@@ -273,6 +278,14 @@ def convert_ticks(
                     raise ValueError(f"Tick precedes the expected UTC start at line {line_number}.")
                 if end_ms is not None and timestamp_ms >= end_ms:
                     raise ValueError(f"Tick is at or beyond the expected end-exclusive boundary at line {line_number}.")
+                if previous_timestamp is not None:
+                    global_gap = timestamp_ms - previous_timestamp
+                    global_max_tick_gap_ms = max(global_max_tick_gap_ms, global_gap)
+                    global_tick_gaps_gt_1s += global_gap > 1_000
+                    global_tick_gaps_gt_5s += global_gap > 5_000
+                    global_tick_gaps_gt_60s += global_gap > 60_000
+                if first_timestamp is None:
+                    first_timestamp = timestamp_ms
                 previous_timestamp = timestamp_ms
                 ticks += 1
                 spread = ask - bid
@@ -303,6 +316,8 @@ def convert_ticks(
             "input_file": input_path.name,
             "input_bytes": input_path.stat().st_size,
             "input_records": ticks,
+            "first_tick_utc": epoch_ms_to_iso(first_timestamp),
+            "last_tick_utc": epoch_ms_to_iso(previous_timestamp),
             "timestamp_unit": "unix_milliseconds",
             "timezone": "UTC",
             "candle_boundary": "epoch-aligned UTC intervals; [start, end)",
@@ -312,6 +327,12 @@ def convert_ticks(
             "duplicate_policy": "strictly increasing timestamps required; duplicates and out-of-order ticks fail conversion",
             "tick_count_spread_gt_5": spread_gt_5,
             "tick_count_spread_gt_10": spread_gt_10,
+            "global_intertick_gap_metrics": {
+                "max_gap_ms": global_max_tick_gap_ms,
+                "gaps_gt_1s": global_tick_gaps_gt_1s,
+                "gaps_gt_5s": global_tick_gaps_gt_5s,
+                "gaps_gt_60s": global_tick_gaps_gt_60s,
+            },
             "bars_by_timeframe": bars_by_timeframe,
             "missing_buckets_by_timeframe": missing_by_timeframe,
             "outputs": {tf: path.name for tf, path in final_paths.items()},
