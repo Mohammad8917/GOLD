@@ -202,6 +202,98 @@ class DeliveryWalTests(unittest.TestCase):
         self.assertTrue(any("status is UNKNOWN" in line for line in captured.output))
         self.assertTrue(any("decision: retry" in line for line in captured.output))
 
+    def test_stale_unknown_delivery_is_preserved_and_retried_with_marker(self):
+        key = signal_key(self.signal)
+        prior_error = {
+            "signal_id": key,
+            "timestamp": self.signal["candle_time"].isoformat(),
+            "at": datetime.now(timezone.utc).isoformat(),
+            "error": "previous delivery outcome was ambiguous",
+        }
+        prior_recovery = {
+            "at": datetime.now(timezone.utc).isoformat(),
+            "from": "SENDING",
+            "to": "UNKNOWN",
+            "decision": "startup recovery; retry with [RECOVERY RETRY]",
+        }
+        write_outbox(self.state_path, {
+            key: {
+                "signal_id": key,
+                "signal_timestamp": self.signal["candle_time"].isoformat(),
+                "symbol": "XAU/USD",
+                "timeframe": "15min",
+                "status": "UNKNOWN",
+                "attempt_count": 1,
+                "message": "original signal message",
+                "telegram_message_id": None,
+                "last_error": "previous delivery outcome was ambiguous",
+                "error_history": [prior_error],
+                "recovery_history": [prior_recovery],
+                "lifecycle_status": "ACTIVE",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        })
+
+        with self.run_with_signal(), patch(
+            "gold_signal.service._signal_is_fresh", return_value=False,
+        ), patch(
+            "gold_signal.service.send_telegram", new=mock_send_success(995),
+        ) as sender:
+            result = run_once(self.config)
+
+        self.assertEqual(result, "sent")
+        self.assertTrue(sender.call_args.args[1].startswith("<b>[RECOVERY RETRY]</b>"))
+        self.assertIn("original signal message", sender.call_args.args[1])
+        recovered = read_outbox(self.state_path)[key]
+        self.assertEqual(recovered["status"], "SENT")
+        self.assertEqual(recovered["attempt_count"], 2)
+        self.assertEqual(recovered["message"], "original signal message")
+        self.assertEqual(recovered["error_history"], [prior_error])
+        self.assertEqual(recovered["recovery_history"][0], prior_recovery)
+        self.assertEqual(recovered["telegram_message_id"], 995)
+
+    def test_stale_failed_delivery_keeps_definitive_error_history(self):
+        key = signal_key(self.signal)
+        prior_error = {
+            "signal_id": key,
+            "timestamp": self.signal["candle_time"].isoformat(),
+            "at": datetime.now(timezone.utc).isoformat(),
+            "error": "Telegram definitive rejection",
+        }
+        write_outbox(self.state_path, {
+            key: {
+                "signal_id": key,
+                "signal_timestamp": self.signal["candle_time"].isoformat(),
+                "symbol": "XAU/USD",
+                "timeframe": "15min",
+                "status": "FAILED",
+                "attempt_count": 1,
+                "message": "original signal message",
+                "telegram_message_id": None,
+                "last_error": "Telegram definitive rejection",
+                "error_history": [prior_error],
+                "recovery_history": [],
+                "lifecycle_status": "ACTIVE",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        })
+
+        with self.run_with_signal(), patch(
+            "gold_signal.service._signal_is_fresh", return_value=False,
+        ), patch(
+            "gold_signal.service._process_stale_notice_groups", return_value=0,
+        ), patch("gold_signal.service.send_telegram") as sender:
+            result = run_once(self.config)
+
+        self.assertEqual(result, "processed_no_signal")
+        sender.assert_not_called()
+        stale = read_outbox(self.state_path)[key]
+        self.assertEqual(stale["status"], "FAILED")
+        self.assertEqual(stale["last_error"], "Telegram definitive rejection")
+        self.assertEqual(stale["error_history"], [prior_error])
+        self.assertEqual(stale["lifecycle_status"], "CLOSED_STALE")
+        self.assertTrue(stale["stale_notice_group"])
+
     def test_durable_sent_record_advances_cursor_without_resending(self):
         key = signal_key(self.signal)
         write_outbox(self.state_path, {
