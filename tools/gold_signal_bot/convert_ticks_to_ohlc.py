@@ -177,7 +177,7 @@ class TimeframeAggregator:
         self.missing_buckets += max(
             0, (bucket - previous_bucket) // self.interval_ms - 1
         )
-        self.current = Candle.start(bucket, bid, ask)
+        self.current = Candle.start(bucket, timestamp_ms, bid, ask)
         return completed
 
     def finish(self) -> dict | None:
