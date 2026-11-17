@@ -146,12 +146,22 @@ def _process_stale_notice_groups(config: Config, outbox: dict[str, dict], sessio
         stamps = [parse_bar_time(record["signal_timestamp"]) for _, record in members]
         first_stamp, last_stamp = min(stamps), max(stamps)
         count = len(members)
+        ambiguous_count = sum(
+            record.get("delivery_status_before_stale") == "UNKNOWN"
+            for _, record in members
+        )
         timeframe = str(members[0][1].get("timeframe", config.timeframe))
+        ambiguous_line = (
+            f"<b>نتیجه ارسال قبلی نامشخص:</b> {ambiguous_count} سیگنال؛ "
+            "به‌دلیل قدیمی بودن، پیام معاملاتی مجدداً ارسال نشد.\n"
+            if ambiguous_count else ""
+        )
         message = (
             "⚠️ <b>GOLD / XAUUSD — STALE SIGNALS SKIPPED</b>\n"
             f"<b>تعداد:</b> {count} سیگنال\n"
             f"<b>بازه کندل‌ها:</b> {first_stamp:%Y-%m-%d %H:%M} تا {last_stamp:%Y-%m-%d %H:%M} UTC\n"
-            f"<b>تایم‌فریم:</b> {timeframe}\n\n"
+            f"<b>تایم‌فریم:</b> {timeframe}\n"
+            f"{ambiguous_line}\n"
             "این سیگنال‌های قدیمی ارسال نشدند؛ هیچ سفارش یا معامله‌ای اجرا نشده است."
         )
         if any(record.get("stale_notice_status") == "UNKNOWN" for _, record in members):
@@ -635,26 +645,14 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
                     )
                 recovery = bool(record and record.get("status") == "UNKNOWN")
 
-                # Catch-up candles do not create new alerts. However, UNKNOWN means
-                # Telegram may already have accepted the original POST. Never erase
-                # that recoverable WAL entry merely because its candle is now stale.
+                # Historical catch-up must never send an old trade alert. Preserve
+                # the prior delivery outcome in the WAL, including UNKNOWN, and send
+                # only the separate silent stale-summary notice.
                 signal_is_fresh = _signal_is_fresh(
                     stamp, config.timeframe,
                     grace_seconds=getattr(config, "freshness_grace_seconds", 300),
                 )
-                if not signal_is_fresh and recovery:
-                    if not isinstance(record.get("message"), str) or not record["message"]:
-                        raise RuntimeError(
-                            f"Ambiguous stale signal {key} has no original message; "
-                            "refusing to discard or reconstruct its delivery record."
-                        )
-                    LOG.warning(
-                        "Recovering signal %s with UNKNOWN Telegram outcome although its candle is stale; "
-                        "using visible [RECOVERY RETRY] marker",
-                        key,
-                    )
-
-                if not signal_is_fresh and not recovery:
+                if not signal_is_fresh:
                     now_iso = datetime.now(timezone.utc).isoformat()
                     if not record:
                         stale_record = {
@@ -674,22 +672,34 @@ def run_once(config: Config, session: requests.Session | None = None) -> str:
                         }
                     else:
                         status = record.get("status")
-                        if status not in {"PENDING", "FAILED", "SKIPPED_STALE"}:
+                        if status not in {"PENDING", "UNKNOWN", "FAILED", "SKIPPED_STALE"}:
                             raise RuntimeError(
                                 f"Unexpected WAL status {status!r} for stale signal {key}; "
                                 "refusing to overwrite its delivery history."
                             )
                         stale_record = record
-                        if status == "PENDING":
+                        if status in {"PENDING", "UNKNOWN"}:
+                            # Retain the old message, attempt count, errors and recovery
+                            # history. UNKNOWN is explicitly recorded as unresolved,
+                            # but its stale trade alert is never resent.
+                            stale_record["delivery_status_before_stale"] = status
                             stale_record["status"] = "SKIPPED_STALE"
                             stale_record["lifecycle_status"] = "CLOSED_STALE"
                             stale_record["closed_at"] = now_iso
-                            stale_record["close_reason"] = "Pending historical signal; never delivered"
+                            stale_record["close_reason"] = (
+                                "Historical catch-up signal; stale trade alert not sent. "
+                                + ("Prior Telegram delivery outcome was UNKNOWN."
+                                   if status == "UNKNOWN"
+                                   else "Telegram delivery had not started.")
+                            )
                             stale_record.setdefault("recovery_history", []).append({
                                 "at": now_iso,
-                                "from": "PENDING",
+                                "from": status,
                                 "to": "SKIPPED_STALE",
-                                "decision": "stale catch-up; no Telegram request had started",
+                                "decision": (
+                                    "stale trade alert was not retried; preserve prior delivery history "
+                                    "and notify only through the stale-summary message"
+                                ),
                             })
                         elif status == "FAILED":
                             # Preserve the definitive Telegram rejection and its
