@@ -43,7 +43,8 @@ def to_epoch_ms(value: str | None) -> int | None:
     if value is None:
         return None
     stamp = parse_utc(value)
-    return int(stamp.timestamp() * 1000)
+    delta = stamp - datetime(1970, 1, 1, tzinfo=timezone.utc)
+    return delta.days * 86_400_000 + delta.seconds * 1_000 + delta.microseconds // 1_000
 
 
 def epoch_ms_to_iso(value: int) -> str:
